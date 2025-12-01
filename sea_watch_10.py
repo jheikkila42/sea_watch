@@ -445,8 +445,16 @@ def generate_schedule(days_data, output_path=None):
                     for i in range(0, ns):
                         work[i] = True
                         opsl[i] = True
-                    rem = 17 - ns
-                    slot = ns + 12  # +6h lepo
+                    
+                    # Laske päivävuoron aloitus:
+                    # - Vähintään 6h lepo yövuoron jälkeen
+                    # - Mutta ei ennen klo 08:00 (normaali työajan alku)
+                    NORMAL_START = time_to_index(8, 0)  # klo 08:00 = slot 16
+                    min_rest_slots = 12  # 6h = 12 puolituntia
+                    earliest_after_rest = ns + min_rest_slots
+                    slot = max(earliest_after_rest, NORMAL_START)  # Ei ennen klo 08!
+                    
+                    rem = 17 - ns  # Jäljellä olevat työtunnit (slotteina)
                     L1 = time_to_index(11,30)
                     L2 = time_to_index(12,0)
                     a=0
