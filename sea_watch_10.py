@@ -184,7 +184,10 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m):
 
     # --- DAYMAN EU: Aamuvuoro ---
     # EU kattaa operaation alun (aikaisin aloitus jos tarpeen)
-    eu_start = op_start
+    if needs_early:
+        eu_start = op_start
+    else:
+        eu_start = NORMAL_START
     eu_end = eu_start + TARGET
     if eu_start < LUNCH_START < eu_end:
         eu_end += 1  # Lounastauko
@@ -196,9 +199,6 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m):
     }
 
     # --- DAYMAN PH2: Normaali päivä (jos mahdollista) ---
-    # PH2 tekee normaalin 08-17 päivän jos se auttaa kattavuuteen
-    # Tämä parantaa kattavuutta keskellä päivää
-    
     if needs_late or needs_night:
         # Operaatio jatkuu illalla/yöllä, PH2 voi tehdä normaalin päivän
         ph2_start = NORMAL_START  # 08:00
@@ -212,21 +212,20 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m):
             'next_day_end': None
         }
     else:
-        # Operaatio loppuu ennen iltaa, PH2 kattaa lopun
-        ph2_end = op_end
-        ph2_start = ph2_end - TARGET
+        # Operaatio loppuu ennen iltaa - PH2 tekee myös normaalin päivän
+        # (ei tarvita erikoisvuoroa kun operaatio on lyhyt)
+        ph2_start = NORMAL_START
+        ph2_end = ph2_start + TARGET
         if ph2_start < LUNCH_START < ph2_end:
-            ph2_start -= 1
+            ph2_end += 1
         
         shifts['Dayman PH2'] = {
-            'start': max(ph2_start, 0),
-            'end': ph2_end,
+            'start': ph2_start,
+            'end': min(ph2_end, 48),
             'next_day_end': None
         }
 
-    # --- DAYMAN PH1: Iltavuoro/Yövuoro ---
-    # PH1 kattaa operaation lopun (myöhäinen vuoro jos tarpeen)
-    
+    # --- DAYMAN PH1: Iltavuoro/Yövuoro tai normaali ---
     if needs_night:
         # Yövuoro - päivän 1 pitää olla 8.5h
         ph1_start = 48 - TARGET  # Aloita niin että päivä 1 = 8.5h
@@ -250,9 +249,8 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m):
             'next_day_end': None
         }
     else:
-        # Ei ilta/yövuoroa, PH1 tekee keskivuoron
-        # Aloita kun EU:n vuoro on käynnissä (overlap)
-        ph1_start = eu_end - 4  # 2h overlap
+        # Operaatio loppuu ennen iltaa - PH1 tekee normaalin päivän
+        ph1_start = NORMAL_START
         ph1_end = ph1_start + TARGET
         if ph1_start < LUNCH_START < ph1_end:
             ph1_end += 1
@@ -260,7 +258,7 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m):
         shifts['Dayman PH1'] = {
             'start': ph1_start,
             'end': min(ph1_end, 48),
-            'next_day_end': None if ph1_end <= 48 else ph1_end - 48
+            'next_day_end': None
         }
 
     return shifts
@@ -283,6 +281,28 @@ def calculate_day_shift_for_dayworker(worker, day_info, prev_day_info=None, port
     ops = [False]*48
     notes = []
 
+    # Tulo (2h) - lisätään AINA jos dayman on töissä tuloaikaan
+    ah = day_info['arrival_hour']
+    am = day_info['arrival_minute']
+    arrival_hours = 0
+    arrival_start = None
+    arrival_end = None
+    if ah is not None:
+        arrival_start = time_to_index(ah, am)
+        arrival_end = arrival_start + 4
+        arrival_hours = 2
+
+    # Lähtö (1h) - lisätään AINA jos dayman on töissä lähtöaikaan
+    dh = day_info['departure_hour']
+    dm = day_info['departure_minute']
+    departure_hours = 0
+    departure_start = None
+    departure_end = None
+    if dh is not None:
+        departure_start = time_to_index(dh, dm)
+        departure_end = departure_start + 2
+        departure_hours = 1
+
     # Satamaoperaatiovuoro
     if port_shifts and worker in port_shifts:
         sh = port_shifts[worker]
@@ -291,6 +311,25 @@ def calculate_day_shift_for_dayworker(worker, day_info, prev_day_info=None, port
                 if 0 <= i < 48:
                     work[i] = True
                     ops[i] = True
+        
+        # Lisää tulo jos se osuu työaikaan tai laajentaa sitä
+        if arrival_start is not None:
+            # Tarkista onko dayman töissä tuloaikaan
+            is_working_at_arrival = any(work[i] for i in range(arrival_start, min(arrival_end, 48)) if i < 48)
+            # Tai jos tulo on juuri ennen työajan alkua (laajennus)
+            if is_working_at_arrival or (sh['start'] is not None and arrival_end >= sh['start'] - 4):
+                for i in range(arrival_start, min(arrival_end, 48)):
+                    work[i] = True
+                    arr[i] = True
+        
+        # Lisää lähtö jos se osuu työaikaan tai laajentaa sitä
+        if departure_start is not None:
+            is_working_at_departure = any(work[i] for i in range(departure_start, min(departure_end, 48)) if i < 48)
+            if is_working_at_departure or (sh['end'] is not None and departure_start <= sh['end'] + 4):
+                for i in range(departure_start, min(departure_end, 48)):
+                    work[i] = True
+                    dep[i] = True
+        
         return {
             'work_slots': work,
             'arrival_slots': arr,
@@ -300,29 +339,19 @@ def calculate_day_shift_for_dayworker(worker, day_info, prev_day_info=None, port
             'next_day_end': sh.get('next_day_end')
         }
 
-    # Tulo (2h)
-    ah = day_info['arrival_hour']
-    am = day_info['arrival_minute']
-    arrival_hours = 0
-    if ah is not None:
-        s = time_to_index(ah, am)
-        e = s + 4
-        for i in range(s, min(e, 48)):
+    # Normaali päivävuoro (ei satamaoperaatiota)
+    
+    # Lisää tulo
+    if arrival_start is not None:
+        for i in range(arrival_start, min(arrival_end, 48)):
             work[i] = True
             arr[i] = True
-        arrival_hours = 2
 
-    # Lähtö (1h)
-    dh = day_info['departure_hour']
-    dm = day_info['departure_minute']
-    departure_hours = 0
-    if dh is not None:
-        s = time_to_index(dh, dm)
-        e = s + 2
-        for i in range(s, min(e, 48)):
+    # Lisää lähtö
+    if departure_start is not None:
+        for i in range(departure_start, min(departure_end, 48)):
             work[i] = True
             dep[i] = True
-        departure_hours = 1
 
     remaining = TARGET - arrival_hours - departure_hours
     slots_needed = int(remaining * 2)
@@ -442,6 +471,9 @@ def generate_schedule(days_data, output_path=None):
                     ns = prev_ops[w]['next_day_end']
                     work = [False]*48
                     opsl = [False]*48
+                    arrl = [False]*48
+                    depl = [False]*48
+                    
                     for i in range(0, ns):
                         work[i] = True
                         opsl[i] = True
@@ -463,10 +495,31 @@ def generate_schedule(days_data, output_path=None):
                             slot = L2; continue
                         work[slot] = True
                         a+=1; slot+=1
+                    
+                    # Lisää tulo jos dayman on töissä tuloaikaan
+                    ah = info['arrival_hour']
+                    am = info['arrival_minute']
+                    if ah is not None:
+                        arr_start = time_to_index(ah, am)
+                        arr_end = arr_start + 4
+                        for i in range(arr_start, min(arr_end, 48)):
+                            if work[i]:  # Jos on jo töissä
+                                arrl[i] = True
+                    
+                    # Lisää lähtö jos dayman on töissä lähtöaikaan
+                    dh = info['departure_hour']
+                    dm = info['departure_minute']
+                    if dh is not None:
+                        dep_start = time_to_index(dh, dm)
+                        dep_end = dep_start + 2
+                        for i in range(dep_start, min(dep_end, 48)):
+                            if work[i]:  # Jos on jo töissä
+                                depl[i] = True
+                    
                     res = {
                         'work_slots': work,
-                        'arrival_slots': [False]*48,
-                        'departure_slots':[False]*48,
+                        'arrival_slots': arrl,
+                        'departure_slots': depl,
                         'port_op_slots':opsl,
                         'notes':['Yövuoron jälkeen päivävuoro'],
                         'next_day_end': None
