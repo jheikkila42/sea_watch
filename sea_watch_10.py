@@ -177,14 +177,24 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m):
         'next_day_end': None if eu_e <= 48 else eu_e - 48
     }
 
-    # PH2 (loppu)
+    # PH2 (loppu) - varmista että päivä 1 on täysi 8.5h
     ph2_e = end
-    ph2_s = ph2_e - TARGET
-    shifts['Dayman PH2'] = {
-        'start': ph2_s if ph2_s < 48 else None,
-        'end': ph2_e if ph2_e <= 48 else 48,
-        'next_day_end': None if ph2_e <= 48 else ph2_e - 48
-    }
+    if ph2_e > 48:
+        # Yövuoro jatkuu seuraavaan päivään
+        # Päivän 1 pitää olla 8.5h, eli aloitus: 48 - TARGET = 31 (klo 15:30)
+        ph2_s = 48 - TARGET  # Aloita niin että päivä 1 = 8.5h
+        shifts['Dayman PH2'] = {
+            'start': ph2_s,
+            'end': 48,  # Päivä 1 loppuu keskiyöhön
+            'next_day_end': ph2_e - 48  # Seuraavan päivän osuus
+        }
+    else:
+        ph2_s = ph2_e - TARGET
+        shifts['Dayman PH2'] = {
+            'start': ph2_s if ph2_s >= 0 else 0,
+            'end': ph2_e,
+            'next_day_end': None
+        }
 
     # PH1 (keskiosa)
     ph1_s = eu_e - 4
