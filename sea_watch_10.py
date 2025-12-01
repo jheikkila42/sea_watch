@@ -152,12 +152,6 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m):
     """
     Laskee daymanien vuorot satamaoperaatiolle.
     Priorisoi normaalityöaikaa (08-17) mahdollisuuksien mukaan.
-    
-    Strategia:
-    - Jos operaatio alkaa ennen 08: EU aloittaa aikaisin
-    - Jos operaatio on 08-17 sisällä: kaikki tekevät normaalin päivän
-    - Jos operaatio jatkuu 17 jälkeen: PH1 tekee iltavuoron/yövuoron
-    - PH2 tekee normaalin päivän jos mahdollista (parantaa kattavuutta)
     """
     TARGET = 17  # 8.5h = 17 puolituntia
     LUNCH_START = time_to_index(11, 30)
@@ -179,87 +173,118 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m):
 
     # Analysoi operaation osat
     needs_early = op_start < NORMAL_START  # Alkaa ennen klo 08
-    needs_late = op_end > NORMAL_END       # Jatkuu klo 17 jälkeen
+    needs_late = op_end > NORMAL_END       # Jatkuu klo 17 jälkeen (sama päivä tai yö)
     needs_night = op_end > 48              # Jatkuu seuraavaan päivään
+    starts_after_normal = op_start > NORMAL_START  # Alkaa normaalin työajan jälkeen (esim. klo 14)
 
-    # --- DAYMAN EU: Aamuvuoro ---
-    # EU kattaa operaation alun (aikaisin aloitus jos tarpeen)
+    # --- Tapaus 1: Operaatio alkaa aikaisin (ennen 08) ---
     if needs_early:
+        # EU aloittaa aikaisin
         eu_start = op_start
-    else:
-        eu_start = NORMAL_START
-    eu_end = eu_start + TARGET
-    if eu_start < LUNCH_START < eu_end:
-        eu_end += 1  # Lounastauko
-    
-    shifts['Dayman EU'] = {
-        'start': eu_start,
-        'end': min(eu_end, 48),
-        'next_day_end': None if eu_end <= 48 else eu_end - 48
-    }
-
-    # --- DAYMAN PH2: Normaali päivä (jos mahdollista) ---
-    if needs_late or needs_night:
-        # Operaatio jatkuu illalla/yöllä, PH2 voi tehdä normaalin päivän
-        ph2_start = NORMAL_START  # 08:00
-        ph2_end = ph2_start + TARGET
-        if ph2_start < LUNCH_START < ph2_end:
-            ph2_end += 1  # Lounastauko
-        
-        shifts['Dayman PH2'] = {
-            'start': ph2_start,
-            'end': min(ph2_end, 48),
-            'next_day_end': None
+        eu_end = eu_start + TARGET
+        if eu_start < LUNCH_START < eu_end:
+            eu_end += 1
+        shifts['Dayman EU'] = {
+            'start': eu_start,
+            'end': min(eu_end, 48),
+            'next_day_end': None if eu_end <= 48 else eu_end - 48
         }
-    else:
-        # Operaatio loppuu ennen iltaa - PH2 tekee myös normaalin päivän
-        # (ei tarvita erikoisvuoroa kun operaatio on lyhyt)
+        
+        # PH2 tekee normaalin päivän (08-17)
         ph2_start = NORMAL_START
         ph2_end = ph2_start + TARGET
         if ph2_start < LUNCH_START < ph2_end:
             ph2_end += 1
-        
         shifts['Dayman PH2'] = {
             'start': ph2_start,
             'end': min(ph2_end, 48),
             'next_day_end': None
         }
-
-    # --- DAYMAN PH1: Iltavuoro/Yövuoro tai normaali ---
-    if needs_night:
-        # Yövuoro - päivän 1 pitää olla 8.5h
-        ph1_start = 48 - TARGET  # Aloita niin että päivä 1 = 8.5h
-        ph1_end = op_end
         
-        shifts['Dayman PH1'] = {
-            'start': ph1_start,
-            'end': 48,  # Päivä 1 loppuu keskiyöhön
-            'next_day_end': op_end - 48  # Seuraavan päivän osuus
-        }
-    elif needs_late:
-        # Iltavuoro - loppuu saman päivän puolella
-        ph1_end = op_end
-        ph1_start = ph1_end - TARGET
-        if ph1_start < LUNCH_START < ph1_end:
-            ph1_start -= 1
-        
-        shifts['Dayman PH1'] = {
-            'start': max(ph1_start, 0),
-            'end': ph1_end,
+        # PH1: yövuoro jos tarpeen, muuten normaali
+        if needs_night:
+            ph1_start = 48 - TARGET
+            shifts['Dayman PH1'] = {
+                'start': ph1_start,
+                'end': 48,
+                'next_day_end': op_end - 48
+            }
+        elif needs_late:
+            ph1_end = op_end
+            ph1_start = ph1_end - TARGET
+            shifts['Dayman PH1'] = {
+                'start': max(ph1_start, 0),
+                'end': ph1_end,
+                'next_day_end': None
+            }
+        else:
+            # Normaali päivä
+            ph1_start = NORMAL_START
+            ph1_end = ph1_start + TARGET
+            if ph1_start < LUNCH_START < ph1_end:
+                ph1_end += 1
+            shifts['Dayman PH1'] = {
+                'start': ph1_start,
+                'end': min(ph1_end, 48),
+                'next_day_end': None
+            }
+    
+    # --- Tapaus 2: Operaatio alkaa normaalisti/myöhään ja jatkuu iltaan/yöhön ---
+    elif needs_late or needs_night:
+        # EU tekee normaalin päivän (08-17)
+        eu_start = NORMAL_START
+        eu_end = eu_start + TARGET
+        if eu_start < LUNCH_START < eu_end:
+            eu_end += 1
+        shifts['Dayman EU'] = {
+            'start': eu_start,
+            'end': min(eu_end, 48),
             'next_day_end': None
         }
+        
+        # PH2 tekee myös normaalin päivän (08-17)
+        ph2_start = NORMAL_START
+        ph2_end = ph2_start + TARGET
+        if ph2_start < LUNCH_START < ph2_end:
+            ph2_end += 1
+        shifts['Dayman PH2'] = {
+            'start': ph2_start,
+            'end': min(ph2_end, 48),
+            'next_day_end': None
+        }
+        
+        # PH1 tekee iltavuoron/yövuoron
+        if needs_night:
+            ph1_start = 48 - TARGET  # Aloita niin että päivä = 8.5h
+            shifts['Dayman PH1'] = {
+                'start': ph1_start,
+                'end': 48,
+                'next_day_end': op_end - 48
+            }
+        else:
+            ph1_end = op_end
+            ph1_start = ph1_end - TARGET
+            if ph1_start < LUNCH_START < ph1_end:
+                ph1_start -= 1
+            shifts['Dayman PH1'] = {
+                'start': max(ph1_start, 0),
+                'end': ph1_end,
+                'next_day_end': None
+            }
+    
+    # --- Tapaus 3: Operaatio loppuu ennen iltaa (ei needs_late, ei needs_night) ---
     else:
-        # Operaatio loppuu ennen iltaa - PH1 tekee normaalin päivän
-        ph1_start = NORMAL_START
-        ph1_end = ph1_start + TARGET
-        if ph1_start < LUNCH_START < ph1_end:
-            ph1_end += 1
-        
-        shifts['Dayman PH1'] = {
-            'start': ph1_start,
-            'end': min(ph1_end, 48),
-            'next_day_end': None
-        }
+        # Kaikki tekevät normaalin päivän
+        for worker in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
+            start = NORMAL_START
+            end = start + TARGET
+            if start < LUNCH_START < end:
+                end += 1
+            shifts[worker] = {
+                'start': start,
+                'end': min(end, 48),
+                'next_day_end': None
+            }
 
     return shifts
 
