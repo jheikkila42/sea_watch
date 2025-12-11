@@ -1,5 +1,8 @@
 import streamlit as st
 import io
+from sea_watch_10 import generate_schedule, parse_time
+import sea_watch_10
+print("=== DEBUG: sea_watch_10 ladattu tiedostosta:", sea_watch_10.__file__)
 
 # importoi uusi puhdistettu generaattori
 from sea_watch_10 import generate_schedule, parse_time
@@ -122,3 +125,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
