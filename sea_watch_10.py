@@ -205,21 +205,8 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
         'op_end_slot': op_end_slot
     }
 
-    # --- DAYMAN PH2: Normaali päivä ---
-    ph2_start = NORMAL_START
-    ph2_end = ph2_start + TARGET
-    if ph2_start < LUNCH_START < ph2_end:
-        ph2_end += 1
-    
-    shifts['Dayman PH2'] = {
-        'start': ph2_start,
-        'end': min(ph2_end, 48),
-        'next_day_end': None,
-        'op_start_slot': op_start_slot,
-        'op_end_slot': op_end_slot
-    }
-
-    # --- DAYMAN PH1: Yövuoro tai iltavuoro ---
+    # --- DAYMAN PH1 ja PH2: Yövuoro tai iltavuoro ---
+    # PH2:n vuoro riippuu PH1:n tilanteesta, joten ne lasketaan yhdessä
     if needs_night:
         # Yövuoro - laske optimaalinen aloitus
         # Jos tulo on, PH1:n pitää ehtiä tuloon JA yövuoroon
@@ -227,38 +214,72 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
         
         night_end_next_day = op_end - 48  # Kuinka pitkälle yö jatkuu
         
+        # Yövuoron aloitus - optimoi STCW ja kattavuus
+        ideal_start = 48 - TARGET  # 15:30 (8.5h yövuoro)
+        
         if arrival_start is not None:
-            # Tulo + yövuoro - laske niin että yhteensä max 9h
-            # Tulo: arrival_start -> arrival_start + 4 (2h)
-            # Yövuoro pitää alkaa niin että: tulo_aika + yövuoro <= 18 slottia
-            arrival_end = arrival_start + arrival_slots
-            
-            # Yövuoron pituus tänään: 48 - yövuoro_alku
-            # Kokonaispituus: (arrival_end - arrival_start) + (48 - yövuoro_alku) <= 18
-            # => yövuoro_alku >= 48 + arrival_slots - 18 = 48 + 4 - 18 = 34 (klo 17:00)
-            
-            # Mutta myös: päivän pitää olla vähintään 8.5h jos mahdollista
-            # Yövuoron pituus tänään = 48 - start
-            # Tavoite: 48 - start = TARGET = 17 => start = 31 (15:30)
-            
-            # Jos tulo on, kokonaistunnit = tulo (4) + yö (48 - start)
-            # Max 18 slottia => 4 + (48 - start) <= 18 => start >= 34
-            
+            # Tulo + yövuoro - laske niin että yhteensä max 9h (18 slottia)
+            # Tulo: 4 slottia (2h)
+            # Yövuoro tänään: 48 - start
+            # Max: 4 + (48 - start) <= 18 => start >= 34 (17:00)
             min_start_for_stcw = arrival_slots + 48 - 18  # = 34 (17:00)
-            ideal_start = 48 - TARGET  # = 31 (15:30)
             
-            ph1_start = max(min_start_for_stcw, ideal_start)
+            # STCW: Lepo max 2 osassa
+            # Jos PH1 tekee: tulo + tauko + yövuoro = 3 lepojaksoa -> RIKE
+            # Ratkaisu: PH1 ei tule tuloon, aloittaa suoraan operaation alusta
+            # EU ja PH2 hoitavat tulon
+            
+            # PH1 aloittaa operaation alusta (ei tuloa)
+            ph1_start = op_start
+            
+            # PH2 siirtyy myöhemmäksi kattamaan tulon ja operaation alkuosan
+            ph2_end = ph1_start + 4  # 2h overlap PH1:n kanssa
+            ph2_start = ph2_end - TARGET
+            if ph2_start < LUNCH_START < ph2_end:
+                ph2_start -= 1
+            ph2_start = max(ph2_start, NORMAL_START)
+            
+            shifts['Dayman PH2'] = {
+                'start': ph2_start,
+                'end': min(ph2_end, 48),
+                'next_day_end': None,
+                'op_start_slot': op_start_slot,
+                'op_end_slot': op_end_slot
+            }
+            
+            shifts['Dayman PH1'] = {
+                'start': ph1_start,
+                'end': 48,
+                'next_day_end': night_end_next_day,
+                'op_start_slot': op_start_slot,
+                'op_end_slot': op_end_slot,
+                'skip_arrival': True  # PH1 ei tule tuloon
+            }
         else:
             # Ei tuloa - normaali yövuoro
-            ph1_start = 48 - TARGET  # 15:30
-        
-        shifts['Dayman PH1'] = {
-            'start': ph1_start,
-            'end': 48,
-            'next_day_end': night_end_next_day,
-            'op_start_slot': op_start_slot,
-            'op_end_slot': op_end_slot
-        }
+            ph1_start = min(ideal_start, op_start)  # Ei myöhemmin kuin operaatio
+            
+            shifts['Dayman PH1'] = {
+                'start': ph1_start,
+                'end': 48,
+                'next_day_end': night_end_next_day,
+                'op_start_slot': op_start_slot,
+                'op_end_slot': op_end_slot
+            }
+            
+            # PH2 normaali päivä
+            ph2_start = NORMAL_START
+            ph2_end = ph2_start + TARGET
+            if ph2_start < LUNCH_START < ph2_end:
+                ph2_end += 1
+            
+            shifts['Dayman PH2'] = {
+                'start': ph2_start,
+                'end': min(ph2_end, 48),
+                'next_day_end': None,
+                'op_start_slot': op_start_slot,
+                'op_end_slot': op_end_slot
+            }
     elif op_end > NORMAL_END:
         # Iltavuoro (ei yötä)
         ph1_end = op_end
@@ -273,8 +294,22 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
             'op_start_slot': op_start_slot,
             'op_end_slot': op_end_slot
         }
+        
+        # PH2 normaali päivä iltavuorossa
+        ph2_start = NORMAL_START
+        ph2_end = ph2_start + TARGET
+        if ph2_start < LUNCH_START < ph2_end:
+            ph2_end += 1
+        
+        shifts['Dayman PH2'] = {
+            'start': ph2_start,
+            'end': min(ph2_end, 48),
+            'next_day_end': None,
+            'op_start_slot': op_start_slot,
+            'op_end_slot': op_end_slot
+        }
     else:
-        # Normaali päivä
+        # Normaali päivä - kaikki tekevät 08-17
         ph1_start = NORMAL_START
         ph1_end = ph1_start + TARGET
         if ph1_start < LUNCH_START < ph1_end:
@@ -283,6 +318,19 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
         shifts['Dayman PH1'] = {
             'start': ph1_start,
             'end': min(ph1_end, 48),
+            'next_day_end': None,
+            'op_start_slot': op_start_slot,
+            'op_end_slot': op_end_slot
+        }
+        
+        ph2_start = NORMAL_START
+        ph2_end = ph2_start + TARGET
+        if ph2_start < LUNCH_START < ph2_end:
+            ph2_end += 1
+        
+        shifts['Dayman PH2'] = {
+            'start': ph2_start,
+            'end': min(ph2_end, 48),
             'next_day_end': None,
             'op_start_slot': op_start_slot,
             'op_end_slot': op_end_slot
@@ -335,6 +383,7 @@ def calculate_day_shift_for_dayworker(worker, day_info, prev_day_info=None, port
         sh = port_shifts[worker]
         op_start_slot = sh.get('op_start_slot', 0)  # Operaation todellinen alkuaika
         op_end_slot = sh.get('op_end_slot', 48)     # Operaation todellinen loppuaika
+        skip_arrival = sh.get('skip_arrival', False)  # Ohita tulo (STCW-optimointi)
         
         if sh['start'] is not None:
             for i in range(sh['start'], sh['end']):
@@ -344,8 +393,8 @@ def calculate_day_shift_for_dayworker(worker, day_info, prev_day_info=None, port
                     if i >= op_start_slot and i < min(op_end_slot, 48):
                         ops[i] = True
         
-        # Tulo - lisätään AINA kaikille daymaneille
-        if arrival_start is not None:
+        # Tulo - lisätään kaikille daymaneille PAITSI jos skip_arrival
+        if arrival_start is not None and not skip_arrival:
             for i in range(arrival_start, min(arrival_end, 48)):
                 work[i] = True
                 arr[i] = True
