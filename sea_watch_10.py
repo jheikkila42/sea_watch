@@ -89,70 +89,87 @@ def find_work_start_points(work_slots):
 
 def analyze_stcw_from_work_starts(work_slots_48h):
     """
-    STCW-säännöt:
+    STCW-säännöt (liukuva 24h ikkuna):
     - Vähintään 10h lepoa joka 24h jaksossa
     - Lepo voidaan jakaa max 2 osaan
     - Yksi lepojakso vähintään 6h
-    - Lepojaksojen väli max 14h (työjakso max 14h)
+    - Työjakso max 14h
     
-    Laskenta: Tarkastellaan 24h jaksoa päivän 2 osalta.
+    Laskenta: Tarkistetaan jokainen hetki päivässä 2 ja lasketaan
+    24h taaksepäin siitä hetkestä.
     """
-    day1_slots = work_slots_48h[0:48]
-    day2_slots = work_slots_48h[48:96]
+    # Tarkistetaan joka tunti päivässä 2 (slotit 48-95)
+    worst_rest = 24
+    worst_result = None
     
-    # Laske päivän 2 työtunnit
-    day2_work = sum(day2_slots) / 2
-    day2_rest = 24 - day2_work
-    
-    # Etsi lepojaksot päivässä 2 (vähintään 1h)
-    rests = find_rest_periods(day2_slots, min_duration_hours=1.0)
-    
-    # Pisin lepojakso
-    longest = max((r[2] for r in rests), default=0)
-    
-    # Lepojaksojen määrä
-    count = len(rests)
-    
-    # Pisin työjakso (lepojaksojen väli)
-    max_work_period = 0
-    if len(rests) >= 2:
-        for i in range(len(rests) - 1):
-            work_between = (rests[i+1][0] - rests[i][1]) / 2
-            max_work_period = max(max_work_period, work_between)
-    
-    # Tarkista myös työjakso ennen ensimmäistä lepoa ja viimeisen levon jälkeen
-    if rests:
-        # Työjakso päivän alusta ensimmäiseen lepoon
-        first_work = rests[0][0] / 2
-        max_work_period = max(max_work_period, first_work)
+    for check_point in range(48, 96, 2):  # Joka tunti päivässä 2
+        # 24h ikkuna taaksepäin = 48 slottia
+        window_start = check_point - 48
+        window_end = check_point
+        window = work_slots_48h[window_start:window_end]
         
-        # Työjakso viimeisestä levosta päivän loppuun
-        last_work = (48 - rests[-1][1]) / 2
-        max_work_period = max(max_work_period, last_work)
-    else:
-        # Ei lepoa - koko päivä on työjaksoa
-        max_work_period = day2_work
+        # Laske työ ja lepo
+        total_work = sum(window) / 2
+        total_rest = 24 - total_work
+        
+        # Etsi lepojaksot (vähintään 1h)
+        rests = find_rest_periods(window, min_duration_hours=1.0)
+        longest = max((r[2] for r in rests), default=0)
+        count = len(rests)
+        
+        # Pisin työjakso
+        max_work_period = 0
+        work_periods = []
+        in_work = False
+        work_start = 0
+        
+        for i, is_working in enumerate(window):
+            if is_working and not in_work:
+                in_work = True
+                work_start = i
+            elif not is_working and in_work:
+                in_work = False
+                work_periods.append((work_start, i))
+        if in_work:
+            work_periods.append((work_start, len(window)))
+        
+        for wp in work_periods:
+            duration = (wp[1] - wp[0]) / 2
+            max_work_period = max(max_work_period, duration)
+        
+        # Tarkista onko tämä huonoin kohta
+        if total_rest < worst_rest:
+            worst_rest = total_rest
+            
+            issues = []
+            if total_rest < 10:
+                issues.append(f"Lepoa vain {total_rest}h (min 10h)")
+            if count > 2:
+                issues.append(f"Lepo {count} osassa (max 2)")
+            if longest < 6 and count > 0:
+                issues.append(f"Pisin lepo {longest}h (min 6h)")
+            if max_work_period > 14:
+                issues.append(f"Työjakso {max_work_period}h (max 14h)")
+            
+            worst_result = {
+                'total_rest': total_rest,
+                'total_work': total_work,
+                'longest_rest': longest,
+                'rest_period_count': count,
+                'max_gap_between_rest': max_work_period,
+                'status': "OK" if not issues else "VAROITUS",
+                'issues': issues,
+                'worst_point': check_point
+            }
     
-    issues = []
-    if day2_rest < 10:
-        issues.append(f"Lepoa vain {day2_rest}h (min 10h)")
-    if count > 2:
-        issues.append(f"Lepo {count} osassa (max 2)")
-    if longest < 6 and count > 0:
-        issues.append(f"Pisin lepo {longest}h (min 6h)")
-    if max_work_period > 14:
-        issues.append(f"Työjakso {max_work_period}h (max 14h)")
-
-    return {
-        'total_rest': day2_rest,
-        'total_work': day2_work,
-        'longest_rest': longest,
-        'rest_period_count': count,
-        'max_gap_between_rest': max_work_period,
-        'status': "OK" if not issues else "VAROITUS",
-        'issues': issues,
-        'worst_point': None
-    }
+    if worst_result is None:
+        return {
+            'total_rest': 24, 'total_work': 0, 'longest_rest': 24,
+            'rest_period_count': 1, 'max_gap_between_rest': 0,
+            'status': 'OK', 'issues': [], 'worst_point': None
+        }
+    
+    return worst_result
 
 # ---------------------------------------------------------------------
 # SATAMAOPERAATIOVUOROT
