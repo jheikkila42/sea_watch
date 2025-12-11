@@ -88,60 +88,70 @@ def find_work_start_points(work_slots):
 
 
 def analyze_stcw_from_work_starts(work_slots_48h):
+    """
+    STCW-säännöt:
+    - Vähintään 10h lepoa joka 24h jaksossa
+    - Lepo voidaan jakaa max 2 osaan
+    - Yksi lepojakso vähintään 6h
+    - Lepojaksojen väli max 14h (työjakso max 14h)
+    
+    Laskenta: Tarkastellaan 24h jaksoa päivän 2 osalta.
+    """
+    day1_slots = work_slots_48h[0:48]
     day2_slots = work_slots_48h[48:96]
-    starts2 = find_work_start_points(day2_slots)
-    starts_abs = [s + 48 for s in starts2]
-
-    if not starts_abs:
-        return {
-            'total_rest': 24, 'total_work': 0, 'longest_rest': 24,
-            'rest_period_count': 1, 'max_gap_between_rest': 0,
-            'status': 'OK', 'issues': [], 'worst_point': None
-        }
-
-    worst_rest = 24
-    worst = None
-    worst_point = None
-
-    for ws in starts_abs:
-        window = work_slots_48h[ws - 48: ws]
-        total_work = sum(window) / 2
-        total_rest = 24 - total_work
-        rests = find_rest_periods(window)
-        longest = max((r[2] for r in rests), default=0)
-        count = len(rests)
-
-        gaps = 0
-        if len(rests) >= 2:
-            for i in range(len(rests) - 1):
-                gaps = max(gaps, (rests[i+1][0] - rests[i][1]) / 2)
-
-        if total_rest < worst_rest:
-            worst_rest = total_rest
-            worst_point = ws
-            worst = {
-                'total_rest': total_rest,
-                'total_work': total_work,
-                'longest_rest': longest,
-                'rest_period_count': count,
-                'max_gap_between_rest': gaps
-            }
-
+    
+    # Laske päivän 2 työtunnit
+    day2_work = sum(day2_slots) / 2
+    day2_rest = 24 - day2_work
+    
+    # Etsi lepojaksot päivässä 2 (vähintään 1h)
+    rests = find_rest_periods(day2_slots, min_duration_hours=1.0)
+    
+    # Pisin lepojakso
+    longest = max((r[2] for r in rests), default=0)
+    
+    # Lepojaksojen määrä
+    count = len(rests)
+    
+    # Pisin työjakso (lepojaksojen väli)
+    max_work_period = 0
+    if len(rests) >= 2:
+        for i in range(len(rests) - 1):
+            work_between = (rests[i+1][0] - rests[i][1]) / 2
+            max_work_period = max(max_work_period, work_between)
+    
+    # Tarkista myös työjakso ennen ensimmäistä lepoa ja viimeisen levon jälkeen
+    if rests:
+        # Työjakso päivän alusta ensimmäiseen lepoon
+        first_work = rests[0][0] / 2
+        max_work_period = max(max_work_period, first_work)
+        
+        # Työjakso viimeisestä levosta päivän loppuun
+        last_work = (48 - rests[-1][1]) / 2
+        max_work_period = max(max_work_period, last_work)
+    else:
+        # Ei lepoa - koko päivä on työjaksoa
+        max_work_period = day2_work
+    
     issues = []
-    if worst['total_rest'] < 10:
-        issues.append(f"Lepoa vain {worst['total_rest']}h (min 10h)")
-    if worst['rest_period_count'] > 2:
-        issues.append(f"Lepo {worst['rest_period_count']} osassa (max 2)")
-    if worst['longest_rest'] < 6:
-        issues.append(f"Pisin lepo {worst['longest_rest']}h (min 6h)")
-    if worst['max_gap_between_rest'] > 14:
-        issues.append(f"Lepojaksojen väli {worst['max_gap_between_rest']}h (max 14h)")
+    if day2_rest < 10:
+        issues.append(f"Lepoa vain {day2_rest}h (min 10h)")
+    if count > 2:
+        issues.append(f"Lepo {count} osassa (max 2)")
+    if longest < 6 and count > 0:
+        issues.append(f"Pisin lepo {longest}h (min 6h)")
+    if max_work_period > 14:
+        issues.append(f"Työjakso {max_work_period}h (max 14h)")
 
     return {
-        **worst,
+        'total_rest': day2_rest,
+        'total_work': day2_work,
+        'longest_rest': longest,
+        'rest_period_count': count,
+        'max_gap_between_rest': max_work_period,
         'status': "OK" if not issues else "VAROITUS",
         'issues': issues,
-        'worst_point': index_to_time_str(worst_point)
+        'worst_point': None
     }
 
 # ---------------------------------------------------------------------
