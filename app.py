@@ -7,6 +7,11 @@ print("=== DEBUG: sea_watch_10 ladattu tiedostosta:", sea_watch_10.__file__)
 # importoi uusi puhdistettu generaattori
 from sea_watch_10 import generate_schedule, parse_time
 
+import importlib
+import sea_watch_10
+importlib.reload(sea_watch_10)
+from sea_watch_10 import generate_schedule, parse_time
+
 
 # -------------------------------------------------------------------
 # APU: TIME PARSER STREAMLITILLE
@@ -125,4 +130,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
