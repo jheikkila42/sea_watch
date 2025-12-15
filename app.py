@@ -1,16 +1,9 @@
 import streamlit as st
 import io
-from sea_watch_10 import generate_schedule, parse_time
-import sea_watch_10
-print("=== DEBUG: sea_watch_10 ladattu tiedostosta:", sea_watch_10.__file__)
+import pandas as pd
 
-# importoi uusi puhdistettu generaattori
-from sea_watch_10 import generate_schedule, parse_time
-
-import importlib
-import sea_watch_10
-importlib.reload(sea_watch_10)
-from sea_watch_10 import generate_schedule, parse_time
+# importoi esittelyversio
+from sea_watch_11 import generate_schedule, parse_time, time_to_index, index_to_time_str
 
 
 # -------------------------------------------------------------------
@@ -80,12 +73,65 @@ def build_days_data(num_days: int):
 
 
 # -------------------------------------------------------------------
+# APU: LUO TAULUKKONÄKYMÄ
+# -------------------------------------------------------------------
+def create_schedule_table(all_days, day_idx, workers):
+    """
+    Luo pandas DataFrame työvuorotaulukosta.
+    """
+    # Aikasarakkeet (00:00 - 23:30)
+    time_cols = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 30]]
+    
+    # Rakenna data
+    data = []
+    for w in workers:
+        row = {'Työntekijä': w}
+        day_data = all_days[w][day_idx]
+        work = day_data['work_slots']
+        arr = day_data['arrival_slots']
+        dep = day_data['departure_slots']
+        
+        for i, time_col in enumerate(time_cols):
+            if i < len(work):
+                if arr[i]:
+                    row[time_col] = 'B'
+                elif dep[i]:
+                    row[time_col] = 'C'
+                elif work[i]:
+                    row[time_col] = '●'
+                else:
+                    row[time_col] = ''
+            else:
+                row[time_col] = ''
+        data.append(row)
+    
+    return pd.DataFrame(data)
+
+
+def style_schedule_table(df):
+    """
+    Lisää värit taulukkoon.
+    """
+    def color_cell(val):
+        if val == '●':
+            return 'background-color: #4472C4; color: white'
+        elif val == 'B':
+            return 'background-color: #FFC000; color: black'
+        elif val == 'C':
+            return 'background-color: #FF6600; color: white'
+        else:
+            return ''
+    
+    return df.style.applymap(color_cell, subset=df.columns[1:])
+
+
+# -------------------------------------------------------------------
 # SOVELLUS
 # -------------------------------------------------------------------
 def main():
-    st.set_page_config(page_title="Sea Watch 9 – Vuorogeneraattori", layout="wide")
+    st.set_page_config(page_title="Sea Watch - Työvuorogeneraattori", layout="wide")
 
-    st.title("🛳️ Sea Watch 9 – Työvuorolistageneraattori")
+    st.title("🛳️ Sea Watch - Työvuorolistageneraattori")
     st.write("Syötä päivien tulo-/lähtöajat ja satamaoperaatiot, niin sovellus "
              "laskee työvuorot ja STCW-lepoajat automaattisesti.")
 
@@ -111,9 +157,50 @@ def main():
             st.error(f"Virhe generoinnissa: {e}")
             raise
 
-        # Tekstiraportti
-        st.subheader("📄 Raportti ja STCW-analyysi")
-        st.text(report)
+        # Työntekijälista
+        workers = ["Bosun", "Dayman EU", "Dayman PH1", "Dayman PH2", 
+                   "Watchman 1", "Watchman 2", "Watchman 3"]
+
+        # Näytä taulukot jokaiselle päivälle
+        st.subheader("📋 Työvuorot")
+        
+        for d in range(num_days):
+            st.markdown(f"**Päivä {d+1}**")
+            
+            df = create_schedule_table(all_days, d, workers)
+            styled_df = style_schedule_table(df)
+            
+            # Näytä vain osa sarakkeista kerrallaan (parempi luettavuus)
+            st.dataframe(styled_df, use_container_width=True, height=300)
+            
+            st.markdown("---")
+
+        # STCW-yhteenveto
+        st.subheader("📊 STCW-lepoaika-analyysi")
+        
+        stcw_data = []
+        for d in range(1, num_days):  # Päivästä 2 alkaen
+            for w in workers:
+                dat = all_days[w][d]
+                prev = all_days[w][d-1]['work_slots']
+                work = dat['work_slots']
+                
+                from sea_watch_11 import analyze_stcw_from_work_starts
+                combined = prev + work
+                ana = analyze_stcw_from_work_starts(combined)
+                
+                hours = sum(work) / 2
+                stcw_data.append({
+                    'Päivä': d + 1,
+                    'Työntekijä': w,
+                    'Työtunnit': hours,
+                    'Lepo (h)': ana['total_rest'],
+                    'Pisin lepo (h)': ana['longest_rest'],
+                    'Status': '✓ OK' if ana['status'] == 'OK' else '⚠ VAROITUS'
+                })
+        
+        stcw_df = pd.DataFrame(stcw_data)
+        st.dataframe(stcw_df, use_container_width=True)
 
         # Excel-tiedostoksi muistiin
         buffer = io.BytesIO()
@@ -130,5 +217,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
