@@ -95,14 +95,35 @@ def analyze_stcw_from_work_starts(work_slots_48h):
     - Yksi lepojakso vähintään 6h
     - Työjakso max 14h
     
-    Laskenta: Tarkistetaan jokainen hetki päivässä 2 ja lasketaan
+    Laskenta: Tarkistetaan jokainen työjakson loppupiste päivässä 2 ja lasketaan
     24h taaksepäin siitä hetkestä.
     """
-    # Tarkistetaan joka tunti päivässä 2 (slotit 48-95)
+    day2_slots = work_slots_48h[48:96]
+    
+    # Etsi työjaksojen loppupisteet päivässä 2
+    check_points = []
+    in_work = False
+    for i, is_working in enumerate(day2_slots):
+        if is_working and not in_work:
+            in_work = True
+        elif not is_working and in_work:
+            in_work = False
+            check_points.append(i + 48)  # Työjakson loppu
+    if in_work:
+        check_points.append(96)  # Päivän loppu
+    
+    # Jos ei työtä päivässä 2, ei tarkistettavaa
+    if not check_points:
+        return {
+            'total_rest': 24, 'total_work': 0, 'longest_rest': 24,
+            'rest_period_count': 1, 'max_gap_between_rest': 0,
+            'status': 'OK', 'issues': [], 'worst_point': None
+        }
+    
     worst_rest = 24
     worst_result = None
     
-    for check_point in range(48, 96, 2):  # Joka tunti päivässä 2
+    for check_point in check_points:
         # 24h ikkuna taaksepäin = 48 slottia
         window_start = check_point - 48
         window_end = check_point
@@ -114,6 +135,23 @@ def analyze_stcw_from_work_starts(work_slots_48h):
         
         # Etsi lepojaksot (vähintään 1h)
         rests = find_rest_periods(window, min_duration_hours=1.0)
+        
+        # TÄRKEÄ: Jos ikkuna alkaa ja loppuu levolla, ne ovat OSA SAMAA lepojaksoa
+        # (koska 24h ikkuna on "pyöreä" - se jatkuu edellisestä päivästä)
+        # Yhdistetään ensimmäinen ja viimeinen lepojakso jos molemmat koskettavat reunoja
+        if len(rests) >= 2:
+            first_rest = rests[0]
+            last_rest = rests[-1]
+            
+            # Tarkista: ensimmäinen lepo alkaa ikkunan alusta (slot 0)
+            # JA viimeinen lepo loppuu ikkunan loppuun (slot 48)
+            if first_rest[0] == 0 and last_rest[1] == 48:
+                # Yhdistä: poista ensimmäinen ja viimeinen, lisää yhdistetty
+                combined_duration = first_rest[2] + last_rest[2]
+                rests = rests[1:-1]  # Poista ensimmäinen ja viimeinen
+                # Lisää yhdistetty (sijainti ei ole tärkeä, vain kesto)
+                rests.append((0, 48, combined_duration))
+        
         longest = max((r[2] for r in rests), default=0)
         count = len(rests)
         
@@ -285,10 +323,12 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
             ph1_total_slots = ph1_morning_slots + ph1_night_slots
             
             # Jos PH1:llä tulee liikaa tunteja, lyhennä aamuvuoroa
+            # MUTTA aamuvuoro ei saa loppua ennen tulon loppua!
             if ph1_total_slots > MAX_SLOTS:
                 excess = ph1_total_slots - TARGET_SLOTS
                 ph1_morning_end = ph1_morning_end - excess
-                ph1_morning_end = max(ph1_morning_end, NORMAL_START)  # Ei alle 08:00
+                # Aamuvuoro ei saa loppua ennen tulon loppua (arrival_end)
+                ph1_morning_end = max(ph1_morning_end, arrival_end, NORMAL_START)
             
             # PH1:n jaettu vuoro
             shifts['Dayman PH1'] = {
@@ -449,10 +489,9 @@ def calculate_day_shift_for_dayworker(worker, day_info, prev_day_info=None, port
                     if i >= op_start_slot and i < min(op_end_slot, 48):
                         ops[i] = True
             
-            # Tulo - lisätään vain aamuvuoron sisälle (ei ylitä sh['end'])
+            # Tulo - lisätään KOKO tulo (ei rajoiteta aamuvuoron loppuun)
             if arrival_start is not None:
-                arr_end_limited = min(arrival_end, sh['end'])
-                for i in range(arrival_start, min(arr_end_limited, 48)):
+                for i in range(arrival_start, min(arrival_end, 48)):
                     work[i] = True
                     arr[i] = True
         else:
@@ -757,8 +796,11 @@ def generate_schedule(days_data, output_path=None):
                 prev_work = all_days[w][d-1]['work_slots']
                 combined = prev_work + work
                 ana = analyze_stcw_from_work_starts(combined)
+                
+                # Päivän todelliset työtunnit (ei 24h ikkunan)
+                actual_work_hours = sum(work) / 2
 
-                sheet.cell(row=r,column=51).value = ana['total_work']
+                sheet.cell(row=r,column=51).value = actual_work_hours
                 sheet.cell(row=r,column=52).value = ana['total_rest']
                 sheet.cell(row=r,column=53).value = ana['longest_rest']
 
