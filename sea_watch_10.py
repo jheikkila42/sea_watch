@@ -786,7 +786,7 @@ def generate_schedule(days_data, output_path=None):
                     c.fill = C_DEP; c.value="C"
                     c.alignment=Alignment(horizontal='center')
                 elif ops[t]:
-                    c.fill = C_OP;  c.value="S"
+                    c.fill = C_WORK  # Sama väri kuin normaali työ
                     c.alignment=Alignment(horizontal='center')
                 elif work[t]:
                     c.fill = C_WORK
@@ -809,23 +809,6 @@ def generate_schedule(days_data, output_path=None):
                 stc.font = Font(bold=True)
                 stc.alignment = Alignment(horizontal='center')
                 stc.fill = C_OK if ana['status']=="OK" else C_WARN
-
-        # selite
-        base = len(workers) + 4
-        sheet.cell(row=base, column=1).value="Selite:"
-        sheet.cell(row=base, column=1).font=Font(bold=True)
-
-        sheet.cell(row=base+1, column=1).value="Työ"
-        sheet.cell(row=base+1, column=2).fill=C_WORK
-
-        sheet.cell(row=base+2, column=1).value="Satamaan tulo (B)"
-        sheet.cell(row=base+2, column=2).fill=C_ARR
-
-        sheet.cell(row=base+3, column=1).value="Satamasta lähtö (C)"
-        sheet.cell(row=base+3, column=2).fill=C_DEP
-
-        sheet.cell(row=base+4, column=1).value="Satamaoperaatio (S)"
-        sheet.cell(row=base+4, column=2).fill=C_OP
 
     # tallenna halutessa
     if output_path:
