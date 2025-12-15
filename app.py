@@ -3,7 +3,7 @@ import io
 import pandas as pd
 
 # importoi esittelyversio
-from sea_watch_11 import generate_schedule, parse_time, time_to_index, index_to_time_str
+from sea_watch_10 import generate_schedule, parse_time, time_to_index, index_to_time_str
 
 
 # -------------------------------------------------------------------
@@ -185,7 +185,7 @@ def main():
                 prev = all_days[w][d-1]['work_slots']
                 work = dat['work_slots']
                 
-                from sea_watch_11 import analyze_stcw_from_work_starts
+                from sea_watch_10 import analyze_stcw_from_work_starts
                 combined = prev + work
                 ana = analyze_stcw_from_work_starts(combined)
                 
