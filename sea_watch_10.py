@@ -377,87 +377,95 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
                 'op_end_slot': op_end_slot
             }
     elif needs_staggering:
-        # PORRASTETTU PÄIVÄVUORO: tulo + pitkä operaatio + lähtö
-        # EU hoitaa tulon, PH2 hoitaa lähdön, PH1 tekee keskivuoron
+        # PORRASTETTU PÄIVÄVUORO
+        # Sääntö: klo 17-08 välillä max yksi dayman kerrallaan (paitsi tulo/lähtö)
+        # Kaikki daymanit ovat tulossa ja lähdössä
         
-        # Laske kokonaispäivän pituus ja jaa se kolmeen osaan
-        # EU: alku -> alku + 8.5h
-        # PH1: keski -> keski + 8.5h  
-        # PH2: loppu - 8.5h -> loppu
+        # Laske tulon ja lähdön tunnit
+        arrival_slots = 4 if arrival_start is not None else 0  # 2h = 4 slottia
+        departure_slots = 2 if departure_end is not None else 0  # 1h = 2 slottia
         
-        # EU: aamuvuoro - sisältää tulon
-        eu_start = arrival_start if arrival_start is not None else op_start
-        eu_end = eu_start + TARGET_SLOTS
-        if eu_start < LUNCH_START < eu_end:
-            eu_end += 1
+        # Tarvitaanko iltakattavuutta? (operaatio jatkuu 17:00 jälkeen)
+        evening_needed = op_end > NORMAL_END or (departure_end and departure_end > NORMAL_END)
         
-        shifts['Dayman EU'] = {
-            'start': eu_start,
-            'end': min(eu_end, 48),
-            'next_day_end': None,
-            'op_start_slot': op_start_slot,
-            'op_end_slot': op_end_slot,
-            'handles_arrival': True,
-            'handles_departure': False
-        }
-        
-        # PH2: iltavuoro - sisältää lähdön
-        if departure_end:
-            ph2_end = departure_end
-        else:
-            ph2_end = min(op_end, 48)
-        
-        ph2_start = ph2_end - TARGET_SLOTS
-        if ph2_start < LUNCH_START < ph2_end:
-            ph2_start -= 1
-        ph2_start = max(ph2_start, NORMAL_START)
-        
-        shifts['Dayman PH2'] = {
-            'start': ph2_start,
-            'end': ph2_end,
-            'next_day_end': None,
-            'op_start_slot': op_start_slot,
-            'op_end_slot': op_end_slot,
-            'handles_arrival': False,
-            'handles_departure': True
-        }
-        
-        # PH1: keskivuoro - ei tuloa eikä lähtöä
-        # Sijoitetaan EU:n ja PH2:n väliin, varmistetaan overlap molempien kanssa
-        
-        # PH1 alkaa EU:n lopun jälkeen (2h overlap)
-        ph1_start = shifts['Dayman EU']['end'] - 4
-        ph1_start = max(ph1_start, NORMAL_START)
-        
-        # PH1 loppuu PH2:n alun jälkeen (2h overlap)
-        ph1_end = shifts['Dayman PH2']['start'] + 4
-        
-        # Varmista vähintään 8.5h - laajenna tarvittaessa
-        ph1_duration = ph1_end - ph1_start
-        if ph1_start < LUNCH_START < ph1_end:
-            ph1_duration -= 1  # Lounas vähentää efektiivistä
-        
-        if ph1_duration < TARGET_SLOTS:
-            # Tarvitaan lisää aikaa - laajenna molemmin puolin
-            needed = TARGET_SLOTS - ph1_duration
-            # Aloita aikaisemmin
-            ph1_start = ph1_start - (needed // 2)
+        if evening_needed:
+            # PH1: Iltavuoro - kattaa illan yksin
+            # Työvuoro = 8.5h, josta tulo ja lähtö ovat osa
+            
+            if departure_start and departure_start > NORMAL_END:
+                ph1_end = departure_start  # Loppuu lähdön alkuun (lähtö lisätään erikseen)
+            else:
+                ph1_end = min(op_end, 48)
+            
+            # PH1:n työvuoron pituus (ilman tuloa/lähtöä jotka lisätään erikseen)
+            ph1_work_slots = TARGET_SLOTS - arrival_slots - departure_slots
+            ph1_start = ph1_end - ph1_work_slots
+            if ph1_start < LUNCH_START < ph1_end:
+                ph1_start -= 1
             ph1_start = max(ph1_start, NORMAL_START)
-            # Lopeta myöhemmin
-            ph1_end = ph1_end + (needed - needed // 2)
-        
-        if ph1_start < LUNCH_START < ph1_end:
-            ph1_end += 1
-        
-        shifts['Dayman PH1'] = {
-            'start': ph1_start,
-            'end': min(ph1_end, 48),
-            'next_day_end': None,
-            'op_start_slot': op_start_slot,
-            'op_end_slot': op_end_slot,
-            'handles_arrival': False,
-            'handles_departure': False
-        }
+            
+            shifts['Dayman PH1'] = {
+                'start': ph1_start,
+                'end': min(ph1_end, 48),
+                'next_day_end': None,
+                'op_start_slot': op_start_slot,
+                'op_end_slot': op_end_slot
+            }
+            
+            # EU ja PH2: Päivävuoro
+            # Työvuoro alkaa tulon jälkeen, loppuu ennen PH1:n iltavuoroa
+            # Kokonaistunnit = 8.5h (sis. tulo ja lähtö)
+            
+            if arrival_start is not None:
+                # Työvuoro alkaa tulon jälkeen
+                day_start = arrival_start + arrival_slots
+            else:
+                day_start = NORMAL_START
+            
+            # Työvuoron pituus = 8.5h - tulo - lähtö
+            day_work_slots = TARGET_SLOTS - arrival_slots - departure_slots
+            day_end = day_start + day_work_slots
+            if day_start < LUNCH_START < day_end:
+                day_end += 1
+            
+            # Rajoita klo 17 (PH1 ottaa illan)
+            day_end = min(day_end, NORMAL_END)
+            
+            shifts['Dayman EU'] = {
+                'start': day_start,
+                'end': day_end,
+                'next_day_end': None,
+                'op_start_slot': op_start_slot,
+                'op_end_slot': op_end_slot
+            }
+            
+            shifts['Dayman PH2'] = {
+                'start': day_start,
+                'end': day_end,
+                'next_day_end': None,
+                'op_start_slot': op_start_slot,
+                'op_end_slot': op_end_slot
+            }
+        else:
+            # Ei iltakattavuutta - kaikki tekevät normaalin päivän
+            if arrival_start is not None:
+                day_start = arrival_start + arrival_slots
+            else:
+                day_start = NORMAL_START
+            
+            day_work_slots = TARGET_SLOTS - arrival_slots - departure_slots
+            day_end = day_start + day_work_slots
+            if day_start < LUNCH_START < day_end:
+                day_end += 1
+            
+            for name in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
+                shifts[name] = {
+                    'start': day_start,
+                    'end': min(day_end, 48),
+                    'next_day_end': None,
+                    'op_start_slot': op_start_slot,
+                    'op_end_slot': op_end_slot
+                }
     elif op_end > NORMAL_END:
         # Iltavuoro (ei yötä)
         ph1_end = op_end
@@ -596,18 +604,14 @@ def calculate_day_shift_for_dayworker(worker, day_info, prev_day_info=None, port
                         if i >= op_start_slot and i < min(op_end_slot, 48):
                             ops[i] = True
         
-        # Tarkista hoitaako tämä työntekijä tulon/lähdön (porrastetussa vuorossa)
-        handles_arrival = sh.get('handles_arrival', True)  # Oletus: kaikki hoitaa
-        handles_departure = sh.get('handles_departure', True)
-        
-        # Tulo - lisätään vain jos työntekijä hoitaa tulon (paitsi split shift, jossa jo lisätty)
-        if arrival_start is not None and not is_split_shift and handles_arrival:
+        # Tulo - lisätään AINA kaikille daymaneille (paitsi split shift, jossa jo lisätty)
+        if arrival_start is not None and not is_split_shift:
             for i in range(arrival_start, min(arrival_end, 48)):
                 work[i] = True
                 arr[i] = True
         
-        # Lähtö - lisätään vain jos työntekijä hoitaa lähdön
-        if departure_start is not None and handles_departure:
+        # Lähtö - lisätään AINA kaikille daymaneille
+        if departure_start is not None:
             for i in range(departure_start, min(departure_end, 48)):
                 work[i] = True
                 dep[i] = True
