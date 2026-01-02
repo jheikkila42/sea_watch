@@ -942,3 +942,4 @@ def generate_schedule(days_data, output_path=None):
 
     report = "\n".join(lines)
     return wb, all_days, report
+
