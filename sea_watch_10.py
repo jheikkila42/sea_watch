@@ -1,23 +1,12 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Fri Nov 28 13:26:15 2025
 
-@author: OMISTAJA
-"""
-
-# -*- coding: utf-8 -*-
-"""
-Sea Watch 9 – Työvuorogeneraattori Streamlit-sovellukseen
-Puhdistettu ja optimoitu versio
-"""
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# ---------------------------------------------------------------------
+
 # APUFUNKTIOT
-# ---------------------------------------------------------------------
+
 
 def time_to_index(hours, minutes=0):
     return hours * 2 + (1 if minutes >= 30 else 0)
@@ -46,7 +35,7 @@ def parse_time(time_str):
     except:
         return None, None
 
-# ---------------------------------------------------------------------
+
 # STCW – LEPOAIKALASKENTA
 # ---------------------------------------------------------------------
 
@@ -97,6 +86,10 @@ def analyze_stcw_from_work_starts(work_slots_48h):
     
     Laskenta: Tarkistetaan jokainen työjakson loppupiste päivässä 2 ja lasketaan
     24h taaksepäin siitä hetkestä.
+    Tulevia päivityksiä tähän osioon:
+    Loppupisteet lasketaan joka päivä.
+    Sen sijaan että lepoajat laskettaisiin loppupisteistä, toteutus muutettaisiin sellaiseksi että se laskettaisiin tunneittain
+    
     """
     day2_slots = work_slots_48h[48:96]
     
@@ -136,20 +129,20 @@ def analyze_stcw_from_work_starts(work_slots_48h):
         # Etsi lepojaksot (vähintään 1h)
         rests = find_rest_periods(window, min_duration_hours=1.0)
         
-        # TÄRKEÄ: Jos ikkuna alkaa ja loppuu levolla, ne ovat OSA SAMAA lepojaksoa
-        # (koska 24h ikkuna on "pyöreä" - se jatkuu edellisestä päivästä)
-        # Yhdistetään ensimmäinen ja viimeinen lepojakso jos molemmat koskettavat reunoja
+        # Jos ikkuna alkaa ja loppuu levolla, ne ovat OSA SAMAA lepojaksoa
+        
+        
         if len(rests) >= 2:
             first_rest = rests[0]
             last_rest = rests[-1]
             
-            # Tarkista: ensimmäinen lepo alkaa ikkunan alusta (slot 0)
-            # JA viimeinen lepo loppuu ikkunan loppuun (slot 48)
+            # Ensimmäinen lepo alkaa ikkunan alusta (slot 0)
+            # Viimeinen lepo loppuu ikkunan loppuun (slot 48)
             if first_rest[0] == 0 and last_rest[1] == 48:
                 # Yhdistä: poista ensimmäinen ja viimeinen, lisää yhdistetty
                 combined_duration = first_rest[2] + last_rest[2]
                 rests = rests[1:-1]  # Poista ensimmäinen ja viimeinen
-                # Lisää yhdistetty (sijainti ei ole tärkeä, vain kesto)
+                # Lisää yhdistetty 
                 rests.append((0, 48, combined_duration))
         
         longest = max((r[2] for r in rests), default=0)
@@ -209,7 +202,7 @@ def analyze_stcw_from_work_starts(work_slots_48h):
     
     return worst_result
 
-# ---------------------------------------------------------------------
+
 # SATAMAOPERAATIOVUOROT
 # ---------------------------------------------------------------------
 
@@ -524,7 +517,7 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
 
     return shifts
 
-# ---------------------------------------------------------------------
+
 # PÄIVÄVUOROT
 # ---------------------------------------------------------------------
 
@@ -716,7 +709,7 @@ def calculate_day_shift_for_watchman(worker, day_info):
         'next_day_end': None
     }
 
-# ---------------------------------------------------------------------
+
 # PÄÄFUNKTIO STREAMLITILLE
 # ---------------------------------------------------------------------
 
@@ -942,4 +935,5 @@ def generate_schedule(days_data, output_path=None):
 
     report = "\n".join(lines)
     return wb, all_days, report
+
 
