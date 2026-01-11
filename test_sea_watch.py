@@ -1,8 +1,4 @@
-"""
-Testit työvuorogeneraattorille (sea_watch_10.py)
 
-Aja testit: python -m pytest test_sea_watch.py -v
-"""
 
 import pytest
 from sea_watch_10 import (
@@ -13,7 +9,7 @@ from sea_watch_10 import (
 )
 
 
-# ---------------------------------------------------------------------
+
 # APUFUNKTIOT TESTEILLE
 # ---------------------------------------------------------------------
 
@@ -71,7 +67,7 @@ def run_scenario(arrival_hour, departure_hour, op_start_hour, op_end_hour,
     return all_days
 
 
-# ---------------------------------------------------------------------
+
 # TESTIT: DAYMANIT TULOSSA JA LÄHDÖSSÄ
 # ---------------------------------------------------------------------
 
@@ -123,7 +119,7 @@ class TestDaymenArrivalDeparture:
             assert has_departure, f"{w} ei ole lähdössä (myöhäinen lähtö)"
 
 
-# ---------------------------------------------------------------------
+
 # TESTIT: ILTAVUOROT (KLO 17-08 MAX YKSI DAYMAN)
 # ---------------------------------------------------------------------
 
@@ -166,7 +162,7 @@ class TestEveningShifts:
             assert count >= 1, f"Klo {hour}:00 ei ole ketään daymania töissä"
 
 
-# ---------------------------------------------------------------------
+
 # TESTIT: STCW-SÄÄNNÖT
 # ---------------------------------------------------------------------
 
@@ -250,7 +246,6 @@ class TestSTCW:
                 f"{w}: STCW status {ana['status']}, issues: {ana['issues']}"
 
 
-# ---------------------------------------------------------------------
 # TESTIT: WATCHMANIT
 # ---------------------------------------------------------------------
 
@@ -272,7 +267,7 @@ class TestWatchmen:
             assert hours == 8.0, f"{w}: {hours}h työtä (pitäisi 8h)"
 
 
-# ---------------------------------------------------------------------
+
 # TESTIT: BOSUN
 # ---------------------------------------------------------------------
 
@@ -311,7 +306,7 @@ class TestBosun:
         assert 8.0 <= hours <= 9.0, f"Bosun: {hours}h työtä (pitäisi ~8.5h)"
 
 
-# ---------------------------------------------------------------------
+
 # TESTIT: ERIKOISTAPAUKSET
 # ---------------------------------------------------------------------
 
@@ -362,7 +357,7 @@ class TestSpecialCases:
         assert night_coverage, "Kukaan dayman ei tee yövuoroa"
 
 
-# ---------------------------------------------------------------------
+
 # TESTIT: REGRESSIOT (aiemmin löydetyt bugit)
 # ---------------------------------------------------------------------
 
