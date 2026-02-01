@@ -252,9 +252,9 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
     needs_night = op_end > 48
     
     # Laske tulon ja lähdön vaikutus
-    arrival_slots = 4 if arrival_hour is not None else 0  # 2h tulo
+    arrival_slots = 2 if arrival_hour is not None else 0  # 1h tulo
     arrival_start = time_to_index(arrival_hour, 0) if arrival_hour is not None else None
-    arrival_end = arrival_start + 4 if arrival_start is not None else None
+    arrival_end = arrival_start + 2 if arrival_start is not None else None
     
     departure_slots = 2 if departure_hour is not None else 0  # 1h lähtö
     departure_start = time_to_index(departure_hour, 0) if departure_hour is not None else None
@@ -292,7 +292,7 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
         
         if arrival_start is not None:
             # Kaikki daymanit ovat tulossa
-            # Tulo: arrival_start -> arrival_start + 4 (2h)
+            # Tulo: arrival_start -> arrival_start + 2 (1h)
             
             # Onko tulo aamulla/päivällä vai illalla?
             arrival_is_evening = arrival_start >= NORMAL_END  # Tulo klo 17 jälkeen
@@ -452,7 +452,7 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
         # Kaikki daymanit ovat tulossa ja lähdössä
         
         # Laske tulon ja lähdön tunnit
-        arrival_slots = 4 if arrival_start is not None else 0  # 2h = 4 slottia
+        arrival_slots = 2 if arrival_start is not None else 0  # 1h = 2 slottia
         departure_slots = 2 if departure_end is not None else 0  # 1h = 2 slottia
         
         # Aikaisin sallittu aloitus (huomioi aikainen operaatio)
@@ -704,7 +704,7 @@ def calculate_day_shift_for_dayworker(worker, day_info, prev_day_info=None, port
     ops = [False]*48
     notes = []
 
-    # Tulo (2h) - lisätään AINA jos dayman on töissä tuloaikaan
+    # Tulo (1h) - lisätään AINA jos dayman on töissä tuloaikaan
     ah = day_info['arrival_hour']
     am = day_info['arrival_minute']
     arrival_hours = 0
@@ -712,7 +712,7 @@ def calculate_day_shift_for_dayworker(worker, day_info, prev_day_info=None, port
     arrival_end = None
     if ah is not None:
         arrival_start = time_to_index(ah, am)
-        arrival_end = arrival_start + 4
+        arrival_end = arrival_start + 2
         arrival_hours = 2
 
     # Lähtö (1h) - lisätään AINA jos dayman on töissä lähtöaikaan
