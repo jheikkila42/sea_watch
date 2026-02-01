@@ -856,7 +856,7 @@ def calculate_day_shift_for_watchman(worker, day_info):
     ah = day_info['arrival_hour']
     am = day_info['arrival_minute']
     if ah is not None and get_watchman_on_duty(ah) == worker:
-        s = time_to_index(ah, am); e = s + 4
+        s = time_to_index(ah, am); e = s + 2
         for i in range(s, min(e, 48)):
             work[i] = True
             arr[i] = True
