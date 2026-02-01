@@ -352,16 +352,43 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
                 'split_shift': True
             }
         else:
-            # Ei tuloa - normaali yövuoro
-            ph1_start = min(48 - TARGET_SLOTS, op_start)  # Ei myöhemmin kuin operaatio
+            # Ei tuloa - tarkista tarvitaanko jaettu vuoro
             
-            shifts['Dayman PH1'] = {
-                'start': ph1_start,
-                'end': 48,
-                'next_day_end': night_end_next_day,
-                'op_start_slot': op_start_slot,
-                'op_end_slot': op_end_slot
-            }
+            # Kuinka paljon työtä on illalla? (op_start -> 00:00)
+            evening_work_slots = 48 - op_start
+            
+            # Jos operaatio alkaa niin myöhään ettei 8.5h mahdu yhteen jaksoon,
+            # tarvitaan jaettu vuoro (aamu + ilta)
+            if evening_work_slots < TARGET_SLOTS:
+                # JAETTU VUORO: aamupäivä + iltavuoro
+                morning_slots = TARGET_SLOTS - evening_work_slots
+                
+                ph1_morning_start = NORMAL_START
+                ph1_morning_end = ph1_morning_start + morning_slots
+                if ph1_morning_start < LUNCH_START < ph1_morning_end:
+                    ph1_morning_end += 1
+                
+                shifts['Dayman PH1'] = {
+                    'start': ph1_morning_start,
+                    'end': ph1_morning_end,
+                    'night_start': op_start,  # Iltavuoro alkaa operaation alusta
+                    'night_end': 48,
+                    'next_day_end': night_end_next_day,
+                    'op_start_slot': op_start_slot,
+                    'op_end_slot': op_end_slot,
+                    'split_shift': True
+                }
+            else:
+                # Normaali yövuoro - operaatio alkaa tarpeeksi aikaisin
+                ph1_start = min(48 - TARGET_SLOTS, op_start)
+                
+                shifts['Dayman PH1'] = {
+                    'start': ph1_start,
+                    'end': 48,
+                    'next_day_end': night_end_next_day,
+                    'op_start_slot': op_start_slot,
+                    'op_end_slot': op_end_slot
+                }
             
             # PH2 normaali päivä
             ph2_start = NORMAL_START
@@ -393,27 +420,56 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
         
         if evening_needed:
             # PH1: Iltavuoro - kattaa illan yksin
-            # Työvuoro = 8.5h, josta tulo ja lähtö ovat osa
             
             if departure_start and departure_start > NORMAL_END:
-                ph1_end = departure_start  # Loppuu lähdön alkuun (lähtö lisätään erikseen)
+                ph1_evening_end = departure_start  # Loppuu lähdön alkuun (lähtö lisätään erikseen)
             else:
-                ph1_end = min(op_end, 48)
+                ph1_evening_end = min(op_end, 48)
             
-            # PH1:n työvuoron pituus (ilman tuloa/lähtöä jotka lisätään erikseen)
-            ph1_work_slots = TARGET_SLOTS - arrival_slots - departure_slots
-            ph1_start = ph1_end - ph1_work_slots
-            if ph1_start < LUNCH_START < ph1_end:
-                ph1_start -= 1
-            ph1_start = max(ph1_start, earliest_start)
+            # Milloin iltavuoro alkaa? Operaation alusta tai klo 17, kumpi on myöhemmin
+            ph1_evening_start = max(op_start, NORMAL_END) if op_start > NORMAL_END else NORMAL_END
             
-            shifts['Dayman PH1'] = {
-                'start': ph1_start,
-                'end': min(ph1_end, 48),
-                'next_day_end': None,
-                'op_start_slot': op_start_slot,
-                'op_end_slot': op_end_slot
-            }
+            # Laske iltavuoron pituus
+            ph1_evening_slots = ph1_evening_end - ph1_evening_start
+            
+            # PH1:n kokonaistyöaika (EI vähennä tuloa/lähtöä koska ne lisätään erikseen)
+            ph1_work_slots = TARGET_SLOTS
+            
+            # Tarvitaanko jaettu vuoro? (iltavuoro ei riitä 8.5h:iin)
+            if ph1_evening_slots < ph1_work_slots:
+                # JAETTU VUORO: aamupäivä + iltavuoro
+                # Aamuvuoron pituus = 8.5h - iltavuoron pituus
+                ph1_morning_slots = ph1_work_slots - ph1_evening_slots
+                
+                ph1_morning_start = NORMAL_START
+                ph1_morning_end = ph1_morning_start + ph1_morning_slots
+                if ph1_morning_start < LUNCH_START < ph1_morning_end:
+                    ph1_morning_end += 1
+                
+                shifts['Dayman PH1'] = {
+                    'start': ph1_morning_start,
+                    'end': ph1_morning_end,
+                    'night_start': ph1_evening_start,
+                    'night_end': ph1_evening_end,
+                    'next_day_end': None,
+                    'op_start_slot': op_start_slot,
+                    'op_end_slot': op_end_slot,
+                    'split_shift': True
+                }
+            else:
+                # Normaali iltavuoro (ei taukoa)
+                ph1_start = ph1_evening_end - ph1_work_slots
+                if ph1_start < LUNCH_START < ph1_evening_end:
+                    ph1_start -= 1
+                ph1_start = max(ph1_start, earliest_start)
+                
+                shifts['Dayman PH1'] = {
+                    'start': ph1_start,
+                    'end': min(ph1_evening_end, 48),
+                    'next_day_end': None,
+                    'op_start_slot': op_start_slot,
+                    'op_end_slot': op_end_slot
+                }
             
             # EU ja PH2: Päivävuoro
             # EU hoitaa aikaisen aamun yksin (ennen klo 08)
