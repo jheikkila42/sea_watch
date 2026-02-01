@@ -1,12 +1,5 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sun Feb  1 18:08:20 2026
-
-@author: heikk
-"""
-
-# -*- coding: utf-8 -*-
-"""
 Created on Sun Feb  1 18:01:49 2026
 
 @author: heikk
@@ -423,55 +416,88 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
             }
             
             # EU ja PH2: Päivävuoro
-            # Työvuoro alkaa tulon jälkeen, loppuu ennen PH1:n iltavuoroa
-            # Kokonaistunnit = 8.5h (sis. tulo ja lähtö)
+            # EU hoitaa aikaisen aamun yksin (ennen klo 08)
+            # PH2 aloittaa normaalisti klo 08
             
+            # EU: aloittaa aikaisin jos operaatio vaatii
             if arrival_start is not None:
-                # Työvuoro alkaa tulon jälkeen
-                day_start = arrival_start + arrival_slots
+                eu_day_start = arrival_start + arrival_slots
             else:
-                day_start = earliest_start  # Huomioi aikainen operaatio
+                eu_day_start = earliest_start  # Huomioi aikainen operaatio
             
             # Työvuoron pituus = 8.5h - tulo - lähtö
             day_work_slots = TARGET_SLOTS - arrival_slots - departure_slots
-            day_end = day_start + day_work_slots
-            if day_start < LUNCH_START < day_end:
-                day_end += 1
+            eu_day_end = eu_day_start + day_work_slots
+            if eu_day_start < LUNCH_START < eu_day_end:
+                eu_day_end += 1
             
             # Rajoita klo 17 (PH1 ottaa illan)
-            day_end = min(day_end, NORMAL_END)
+            eu_day_end = min(eu_day_end, NORMAL_END)
             
             shifts['Dayman EU'] = {
-                'start': day_start,
-                'end': day_end,
+                'start': eu_day_start,
+                'end': eu_day_end,
                 'next_day_end': None,
                 'op_start_slot': op_start_slot,
                 'op_end_slot': op_end_slot
             }
             
+            # PH2: aloittaa normaalisti klo 08 (ei aikaista aamua)
+            if arrival_start is not None:
+                ph2_day_start = arrival_start + arrival_slots
+            else:
+                ph2_day_start = NORMAL_START  # Aina klo 08
+            
+            ph2_day_end = ph2_day_start + day_work_slots
+            if ph2_day_start < LUNCH_START < ph2_day_end:
+                ph2_day_end += 1
+            
+            # Rajoita klo 17 (PH1 ottaa illan)
+            ph2_day_end = min(ph2_day_end, NORMAL_END)
+            
             shifts['Dayman PH2'] = {
-                'start': day_start,
-                'end': day_end,
+                'start': ph2_day_start,
+                'end': ph2_day_end,
                 'next_day_end': None,
                 'op_start_slot': op_start_slot,
                 'op_end_slot': op_end_slot
             }
         else:
-            # Ei iltakattavuutta - kaikki tekevät normaalin päivän
+            # Ei iltakattavuutta - EU hoitaa aikaisen aamun, muut klo 08
+            
+            # EU: aloittaa aikaisin jos operaatio vaatii
             if arrival_start is not None:
-                day_start = arrival_start + arrival_slots
+                eu_day_start = arrival_start + arrival_slots
             else:
-                day_start = earliest_start  # Huomioi aikainen operaatio
+                eu_day_start = earliest_start
             
             day_work_slots = TARGET_SLOTS - arrival_slots - departure_slots
-            day_end = day_start + day_work_slots
-            if day_start < LUNCH_START < day_end:
-                day_end += 1
+            eu_day_end = eu_day_start + day_work_slots
+            if eu_day_start < LUNCH_START < eu_day_end:
+                eu_day_end += 1
             
-            for name in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
+            shifts['Dayman EU'] = {
+                'start': eu_day_start,
+                'end': min(eu_day_end, 48),
+                'next_day_end': None,
+                'op_start_slot': op_start_slot,
+                'op_end_slot': op_end_slot
+            }
+            
+            # PH1 ja PH2: aloittavat normaalisti klo 08
+            if arrival_start is not None:
+                normal_day_start = arrival_start + arrival_slots
+            else:
+                normal_day_start = NORMAL_START
+            
+            normal_day_end = normal_day_start + day_work_slots
+            if normal_day_start < LUNCH_START < normal_day_end:
+                normal_day_end += 1
+            
+            for name in ['Dayman PH1', 'Dayman PH2']:
                 shifts[name] = {
-                    'start': day_start,
-                    'end': min(day_end, 48),
+                    'start': normal_day_start,
+                    'end': min(normal_day_end, 48),
                     'next_day_end': None,
                     'op_start_slot': op_start_slot,
                     'op_end_slot': op_end_slot
