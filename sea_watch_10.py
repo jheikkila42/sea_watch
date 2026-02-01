@@ -1,3 +1,17 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Feb  1 18:08:20 2026
+
+@author: heikk
+"""
+
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Feb  1 18:01:49 2026
+
+@author: heikk
+"""
+
 
 
 from openpyxl import Workbook
@@ -378,6 +392,9 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
         arrival_slots = 4 if arrival_start is not None else 0  # 2h = 4 slottia
         departure_slots = 2 if departure_end is not None else 0  # 1h = 2 slottia
         
+        # Aikaisin sallittu aloitus (huomioi aikainen operaatio)
+        earliest_start = op_start if needs_early else NORMAL_START
+        
         # Tarvitaanko iltakattavuutta? (operaatio jatkuu 17:00 jälkeen)
         evening_needed = op_end > NORMAL_END or (departure_end and departure_end > NORMAL_END)
         
@@ -395,7 +412,7 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
             ph1_start = ph1_end - ph1_work_slots
             if ph1_start < LUNCH_START < ph1_end:
                 ph1_start -= 1
-            ph1_start = max(ph1_start, NORMAL_START)
+            ph1_start = max(ph1_start, earliest_start)
             
             shifts['Dayman PH1'] = {
                 'start': ph1_start,
@@ -413,7 +430,7 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
                 # Työvuoro alkaa tulon jälkeen
                 day_start = arrival_start + arrival_slots
             else:
-                day_start = NORMAL_START
+                day_start = earliest_start  # Huomioi aikainen operaatio
             
             # Työvuoron pituus = 8.5h - tulo - lähtö
             day_work_slots = TARGET_SLOTS - arrival_slots - departure_slots
@@ -444,7 +461,7 @@ def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, 
             if arrival_start is not None:
                 day_start = arrival_start + arrival_slots
             else:
-                day_start = NORMAL_START
+                day_start = earliest_start  # Huomioi aikainen operaatio
             
             day_work_slots = TARGET_SLOTS - arrival_slots - departure_slots
             day_end = day_start + day_work_slots
@@ -935,5 +952,3 @@ def generate_schedule(days_data, output_path=None):
 
     report = "\n".join(lines)
     return wb, all_days, report
-
-
