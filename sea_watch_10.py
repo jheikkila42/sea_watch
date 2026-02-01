@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 Created on Sun Feb  1 18:01:49 2026
@@ -1035,3 +1034,6 @@ def generate_schedule(days_data, output_path=None):
 
     report = "\n".join(lines)
     return wb, all_days, report
+
+
+
