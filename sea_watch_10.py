@@ -126,12 +126,69 @@ def generate_schedule(days_data):
         
         if curr_op_end == 0 and next_op_start == 0:
             # Jatkuva operaatio yön yli
-            # Yö jaetaan: yksi dayman 00-03, toinen 03-08
+            # Yö jaetaan dynaamisesti lepoaikasäädösten mukaan
             continuous_nights.append({
                 'day_index': d,
                 'early_worker': 'Dayman PH1',
                 'late_worker': 'Dayman PH2'
             })
+
+    def evaluate_night_split(prev_early, prev_late, split_slot, arrival_start, arrival_end,
+                             departure_start, departure_end):
+        early_work = [False] * 48
+        late_work = [False] * 48
+
+        for slot in range(0, min(split_slot, 48)):
+            early_work[slot] = True
+        for slot in range(split_slot, min(NORMAL_START, 48)):
+            late_work[slot] = True
+
+        if arrival_start is not None:
+            for i in range(arrival_start, min(arrival_end, 48)):
+                early_work[i] = True
+                late_work[i] = True
+        if departure_start is not None:
+            for i in range(departure_start, min(departure_end, 48)):
+                early_work[i] = True
+                late_work[i] = True
+
+        early_analysis = analyze_stcw_from_work_starts(prev_early + early_work)
+        late_analysis = analyze_stcw_from_work_starts(prev_late + late_work)
+
+        early_issues = len(early_analysis['issues'])
+        late_issues = len(late_analysis['issues'])
+        total_issues = early_issues + late_issues
+
+        min_longest_rest = min(early_analysis['longest_rest'], late_analysis['longest_rest'])
+        min_total_rest = min(early_analysis['total_rest'], late_analysis['total_rest'])
+
+        return (
+            total_issues,
+            -min_longest_rest,
+            -min_total_rest
+        ), early_analysis, late_analysis
+
+    def choose_night_split_slot(prev_early, prev_late, arrival_start, arrival_end,
+                                departure_start, departure_end):
+        candidate_slots = list(range(time_to_index(1, 0), time_to_index(7, 0) + 1))
+        best_slot = None
+        best_score = None
+
+        for split_slot in candidate_slots:
+            score, _, _ = evaluate_night_split(
+                prev_early,
+                prev_late,
+                split_slot,
+                arrival_start,
+                arrival_end,
+                departure_start,
+                departure_end
+            )
+            if best_score is None or score < best_score:
+                best_score = score
+                best_slot = split_slot
+
+        return best_slot or time_to_index(3, 0)
     
     # ========================================
     # VAIHE 2: Laske vuorot päivä kerrallaan
@@ -179,6 +236,19 @@ def generate_schedule(days_data):
                 early_worker = night_info['early_worker']
                 late_worker = night_info['late_worker']
                 break
+        
+        night_split_slot = None
+        if continues_from_night:
+            prev_early = all_days[early_worker][d - 1]['work_slots']
+            prev_late = all_days[late_worker][d - 1]['work_slots']
+            night_split_slot = choose_night_split_slot(
+                prev_early,
+                prev_late,
+                arrival_start,
+                arrival_end,
+                departure_start,
+                departure_end
+            )
         
         # Onko tämä päivä jatkuvan yön alussa?
         starts_night = False
@@ -252,15 +322,14 @@ def generate_schedule(days_data):
             # ---- JATKUVAN YÖN KÄSITTELY ----
             
             if continues_from_night and dayman in (early_worker, late_worker):
-                night_split_slot = time_to_index(3, 0)
                 if dayman == early_worker:
-                    notes.append('Yövuoro 00-03')
+                    notes.append(f"Yövuoro 00-{index_to_time_str(night_split_slot)}")
                     for slot in range(0, min(night_split_slot, 48)):
                         work[slot] = True
                         if slot < min(op_end, 48):
                             ops[slot] = True
                 else:
-                    notes.append('Yövuoro 03-08')
+                    notes.append(f"Yövuoro {index_to_time_str(night_split_slot)}-08")
                     for slot in range(night_split_slot, min(NORMAL_START, 48)):
                         work[slot] = True
                         if slot < min(op_end, 48):
