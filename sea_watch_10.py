@@ -85,11 +85,12 @@ def find_work_start_points(work_slots):
 
 def analyze_stcw_from_work_starts(work_slots_48h):
     """
-    STCW-säännöt (liukuva 24h ikkuna):
+    5.2-säännöt (liukuva 24h ikkuna):
     - Vähintään 10h lepoa joka 24h jaksossa
-    - Lepo voidaan jakaa max 2 osaan
+    - Lepo voidaan jakaa max 3 osaan
     - Yksi lepojakso vähintään 6h
-    - Työjakso max 14h
+    - Muut lepojaksot vähintään 1h
+    - Jaksojen välissä enintään 14h (eli työjakso max 14h)
     
     Laskenta: Tarkistetaan jokainen työjakson loppupiste päivässä 2 ja lasketaan
     24h taaksepäin siitä hetkestä.
@@ -133,24 +134,27 @@ def analyze_stcw_from_work_starts(work_slots_48h):
         total_work = sum(window) / 2
         total_rest = 24 - total_work
         
-        # Etsi lepojaksot (vähintään 1h)
-        rests = find_rest_periods(window, min_duration_hours=1.0)
+        # Etsi lepojaksot (kaikki kestot), jotta nähdään myös <1h lepo
+        rests_all = find_rest_periods(window, min_duration_hours=0.0)
         
         # Jos ikkuna alkaa ja loppuu levolla, ne ovat OSA SAMAA lepojaksoa
         
         
-        if len(rests) >= 2:
-            first_rest = rests[0]
-            last_rest = rests[-1]
+        if len(rests_all) >= 2:
+            first_rest = rests_all[0]
+            last_rest = rests_all[-1]
             
             # Ensimmäinen lepo alkaa ikkunan alusta (slot 0)
             # Viimeinen lepo loppuu ikkunan loppuun (slot 48)
             if first_rest[0] == 0 and last_rest[1] == 48:
                 # Yhdistä: poista ensimmäinen ja viimeinen, lisää yhdistetty
                 combined_duration = first_rest[2] + last_rest[2]
-                rests = rests[1:-1]  # Poista ensimmäinen ja viimeinen
+                rests_all = rests_all[1:-1]  # Poista ensimmäinen ja viimeinen
                 # Lisää yhdistetty 
-                rests.append((0, 48, combined_duration))
+                rests_all.append((0, 48, combined_duration))
+        
+        rests = [r for r in rests_all if r[2] >= 1.0]
+        short_rests = [r for r in rests_all if r[2] < 1.0]
         
         longest = max((r[2] for r in rests), default=0)
         count = len(rests)
@@ -182,8 +186,10 @@ def analyze_stcw_from_work_starts(work_slots_48h):
             issues = []
             if total_rest < 10:
                 issues.append(f"Lepoa vain {total_rest}h (min 10h)")
-            if count > 2:
-                issues.append(f"Lepo {count} osassa (max 2)")
+            if count > 3:
+                issues.append(f"Lepo {count} osassa (max 3)")
+            if short_rests:
+                issues.append("Lepojakso alle 1h")
             if longest < 6 and count > 0:
                 issues.append(f"Pisin lepo {longest}h (min 6h)")
             if max_work_period > 14:
