@@ -189,6 +189,28 @@ def generate_schedule(days_data):
                 best_slot = split_slot
 
         return best_slot or time_to_index(3, 0)
+
+    def ensure_min_dayman_hours(work, prev_work, min_slots):
+        if sum(work) >= min_slots:
+            return
+
+        candidate_slots = [
+            slot for slot in range(NORMAL_START, min(NORMAL_END, 48))
+            if slot < LUNCH_START or slot >= LUNCH_END
+        ]
+
+        for slot in candidate_slots:
+            if sum(work) >= min_slots:
+                break
+            if work[slot]:
+                continue
+
+            trial = work[:]
+            trial[slot] = True
+            combined = prev_work + trial
+            analysis = analyze_stcw_from_work_starts(combined)
+            if analysis['status'] == 'OK':
+                work[slot] = True
     
     # ========================================
     # VAIHE 2: Laske vuorot päivä kerrallaan
@@ -475,6 +497,9 @@ def generate_schedule(days_data):
                 
                 apply_arrival_departure()
             
+            prev_work = all_days[dayman][d - 1]['work_slots'] if d > 0 else [False] * 48
+            ensure_min_dayman_hours(work, prev_work, time_to_index(8, 0))
+
             all_days[dayman].append({
                 'work_slots': work,
                 'arrival_slots': arr,
