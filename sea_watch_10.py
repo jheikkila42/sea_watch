@@ -1,1112 +1,596 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sun Feb  1 18:01:49 2026
-
-@author: heikk
+STCW-yhteensopiva työvuorogeneraattori
+Versio: Uudelleenkirjoitettu jatkuvan operaation tuella
 """
 
-
-
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.styles import PatternFill, Border, Side, Alignment, Font
 from openpyxl.utils import get_column_letter
 
+# Värit
+YELLOW = PatternFill("solid", fgColor="FFFF00")
+GREEN = PatternFill("solid", fgColor="90EE90")
+BLUE = PatternFill("solid", fgColor="ADD8E6")
+ORANGE = PatternFill("solid", fgColor="FFA500")
+GRAY = PatternFill("solid", fgColor="D3D3D3")
+WHITE = PatternFill("solid", fgColor="FFFFFF")
 
-# APUFUNKTIOT
+def time_to_index(h, m):
+    """Muuntaa ajan (h, m) indeksiksi (0-47)"""
+    return h * 2 + (1 if m >= 30 else 0)
 
-
-def time_to_index(hours, minutes=0):
-    return hours * 2 + (1 if minutes >= 30 else 0)
-
-def index_to_time_str(index):
-    hours = (index // 2) % 24
-    minutes = 30 if index % 2 else 0
-    return f"{hours:02d}:{minutes:02d}"
-
-def get_watchman_on_duty(hour):
-    if 8 <= hour < 12 or 20 <= hour < 24:
-        return 'Watchman 1'
-    elif 12 <= hour < 16 or 0 <= hour < 4:
-        return 'Watchman 2'
-    else:
-        return 'Watchman 3'
-
-def parse_time(time_str):
-    if not time_str:
-        return None, None
-    try:
-        parts = time_str.replace(".", ":").split(":")
-        hour = int(parts[0])
-        minute = int(parts[1]) if len(parts) > 1 else 0
-        return hour, minute
-    except:
-        return None, None
-
-
-# STCW – LEPOAIKALASKENTA
-# ---------------------------------------------------------------------
-
-def find_rest_periods(work_slots, min_duration_hours=1.0):
-    rest_periods = []
-    in_rest = False
-    rest_start = 0
-    
-    for i, is_working in enumerate(work_slots):
-        if not is_working and not in_rest:
-            in_rest = True
-            rest_start = i
-        elif is_working and in_rest:
-            in_rest = False
-            duration = (i - rest_start) / 2
-            if duration >= min_duration_hours:
-                rest_periods.append((rest_start, i, duration))
-
-    if in_rest:
-        duration = (len(work_slots) - rest_start) / 2
-        if duration >= min_duration_hours:
-            rest_periods.append((rest_start, len(work_slots), duration))
-
-    return rest_periods
-
-
-def find_work_start_points(work_slots):
-    start_points = []
-    in_work = False
-    
-    for i, is_working in enumerate(work_slots):
-        if is_working and not in_work:
-            start_points.append(i)
-            in_work = True
-        elif not is_working:
-            in_work = False
-
-    return start_points
-
+def index_to_time_str(idx):
+    """Muuntaa indeksin ajaksi HH:MM"""
+    h = idx // 2
+    m = "30" if idx % 2 else "00"
+    return f"{h:02d}:{m}"
 
 def analyze_stcw_from_work_starts(work_slots_48h):
     """
-    5.2-säännöt (liukuva 24h ikkuna):
-    - Vähintään 10h lepoa joka 24h jaksossa
-    - Lepo voidaan jakaa max 3 osaan
-    - Yksi lepojakso vähintään 6h
-    - Muut lepojaksot vähintään 1h
-    - Jaksojen välissä enintään 14h (eli työjakso max 14h)
-    
-    Laskenta: Tarkistetaan jokainen työjakson loppupiste päivässä 2 ja lasketaan
-    24h taaksepäin siitä hetkestä.
-    Tulevia päivityksiä tähän osioon:
-    Loppupisteet lasketaan joka päivä.
-    Sen sijaan että lepoajat laskettaisiin loppupisteistä, toteutus muutettaisiin sellaiseksi että se laskettaisiin tunneittain
-    
+    Analysoi STCW-lepoajat 48h (2 päivän) työvuorolistasta.
+    Palauttaa dict: total_rest, rest_period_count, longest_rest, status, issues
     """
-    day2_slots = work_slots_48h[48:96]
+    # Laske lepo 24h ikkunassa (slotit 0-47 = päivä 1 klo 00 -> päivä 2 klo 00)
+    rest_slots = [not w for w in work_slots_48h[:48]]
     
-    # Etsi työjaksojen loppupisteet päivässä 2
-    check_points = []
-    in_work = False
-    for i, is_working in enumerate(day2_slots):
-        if is_working and not in_work:
-            in_work = True
-        elif not is_working and in_work:
-            in_work = False
-            check_points.append(i + 48)  # Työjakson loppu
-    if in_work:
-        check_points.append(96)  # Päivän loppu
-    
-    # Jos ei työtä päivässä 2, ei tarkistettavaa
-    if not check_points:
-        return {
-            'total_rest': 24, 'total_work': 0, 'longest_rest': 24,
-            'rest_period_count': 1, 'max_gap_between_rest': 0,
-            'status': 'OK', 'issues': [], 'worst_point': None
-        }
-    
-    worst_rest = 24
-    worst_result = None
-    
-    for check_point in check_points:
-        # 24h ikkuna taaksepäin = 48 slottia
-        window_start = check_point - 48
-        window_end = check_point
-        window = work_slots_48h[window_start:window_end]
-        
-        # Laske työ ja lepo
-        total_work = sum(window) / 2
-        total_rest = 24 - total_work
-        
-        # Etsi lepojaksot (kaikki kestot), jotta nähdään myös <1h lepo
-        rests_all = find_rest_periods(window, min_duration_hours=0.0)
-        
-        # Jos ikkuna alkaa ja loppuu levolla, ne ovat OSA SAMAA lepojaksoa
-        
-        
-        if len(rests_all) >= 2:
-            first_rest = rests_all[0]
-            last_rest = rests_all[-1]
-            
-            # Ensimmäinen lepo alkaa ikkunan alusta (slot 0)
-            # Viimeinen lepo loppuu ikkunan loppuun (slot 48)
-            if first_rest[0] == 0 and last_rest[1] == 48:
-                # Yhdistä: poista ensimmäinen ja viimeinen, lisää yhdistetty
-                combined_duration = first_rest[2] + last_rest[2]
-                rests_all = rests_all[1:-1]  # Poista ensimmäinen ja viimeinen
-                # Lisää yhdistetty 
-                rests_all.append((0, 48, combined_duration))
-        
-        rests = [r for r in rests_all if r[2] >= 1.0]
-        short_rests = [r for r in rests_all if r[2] < 1.0]
-        
-        longest = max((r[2] for r in rests), default=0)
-        count = len(rests)
-        
-        # Pisin työjakso
-        max_work_period = 0
-        work_periods = []
-        in_work = False
-        work_start = 0
-        
-        for i, is_working in enumerate(window):
-            if is_working and not in_work:
-                in_work = True
-                work_start = i
-            elif not is_working and in_work:
-                in_work = False
-                work_periods.append((work_start, i))
-        if in_work:
-            work_periods.append((work_start, len(window)))
-        
-        for wp in work_periods:
-            duration = (wp[1] - wp[0]) / 2
-            max_work_period = max(max_work_period, duration)
-        
-        # Tarkista onko tämä huonoin kohta
-        if total_rest < worst_rest:
-            worst_rest = total_rest
-            
-            issues = []
-            if total_rest < 10:
-                issues.append(f"Lepoa vain {total_rest}h (min 10h)")
-            if count > 3:
-                issues.append(f"Lepo {count} osassa (max 3)")
-            if short_rests:
-                issues.append("Lepojakso alle 1h")
-            if longest < 6 and count > 0:
-                issues.append(f"Pisin lepo {longest}h (min 6h)")
-            if max_work_period > 14:
-                issues.append(f"Työjakso {max_work_period}h (max 14h)")
-            
-            worst_result = {
-                'total_rest': total_rest,
-                'total_work': total_work,
-                'longest_rest': longest,
-                'rest_period_count': count,
-                'max_gap_between_rest': max_work_period,
-                'status': "OK" if not issues else "VAROITUS",
-                'issues': issues,
-                'worst_point': check_point
-            }
-    
-    if worst_result is None:
-        return {
-            'total_rest': 24, 'total_work': 0, 'longest_rest': 24,
-            'rest_period_count': 1, 'max_gap_between_rest': 0,
-            'status': 'OK', 'issues': [], 'worst_point': None
-        }
-    
-    return worst_result
-
-
-# SATAMAOPERAATIOVUOROT
-# ---------------------------------------------------------------------
-
-def calculate_port_operation_shifts(op_start_h, op_start_m, op_end_h, op_end_m, arrival_hour=None, departure_hour=None):
-    """
-    Laskee daymanien vuorot satamaoperaatiolle.
-    
-    Periaatteet:
-    1. Kaikki daymanit osallistuvat tuloon/lähtöön
-    2. Satamaoperaatiovuoro merkitään S:llä vain operaatioaikana
-    3. Normaali työaika (08-17) priorisoidaan
-    4. Yövuoron tekijän vuoroa säädetään niin ettei tule STCW-rikettä
-    """
-    TARGET = 17  # 8.5h = 17 puolituntia
-    TARGET_SLOTS = 17
-    MAX_SLOTS = 18  # 9h max
-    LUNCH_START = time_to_index(11, 30)
-    LUNCH_END = time_to_index(12, 0)
-    NORMAL_START = time_to_index(8, 0)
-    NORMAL_END = time_to_index(17, 0)
-
-    op_start = time_to_index(op_start_h, op_start_m)
-    if op_end_h < op_start_h:
-        op_end = time_to_index(op_end_h, op_end_m) + 48  # Seuraava päivä
-    else:
-        op_end = time_to_index(op_end_h, op_end_m)
-
-    # Normaali työaika → ei tarvetta erikoisvuoroille
-    if op_start >= NORMAL_START and op_end <= NORMAL_END:
-        return None
-
-    shifts = {}
-    
-    # Tallenna operaation todellinen aika (S-merkintää varten)
-    op_start_slot = op_start
-    op_end_slot = min(op_end, 48)  # Tänään loppuva osa
-
-    # Analysoi tilanne
-    needs_early = op_start < NORMAL_START
-    needs_night = op_end > 48
-    
-    # Laske tulon ja lähdön vaikutus
-    arrival_slots = 2 if arrival_hour is not None else 0  # 1h tulo
-    arrival_start = time_to_index(arrival_hour, 0) if arrival_hour is not None else None
-    arrival_end = arrival_start + 2 if arrival_start is not None else None
-    
-    departure_slots = 2 if departure_hour is not None else 0  # 1h lähtö
-    departure_start = time_to_index(departure_hour, 0) if departure_hour is not None else None
-    departure_end = departure_start + 2 if departure_start is not None else None
-    
-    # Laske kokonaispäivän pituus jos kaikki tekisivät kaiken
-    day_start = arrival_start if arrival_start is not None else op_start
-    day_end = departure_end if departure_end is not None else min(op_end, 48)
-    total_day_length = day_end - day_start
-    
-    # Tarvitaanko porrastusta? (päivä > 9h = 18 slottia per henkilö)
-    needs_staggering = total_day_length > MAX_SLOTS
-
-    # --- DAYMAN EU: Aamuvuoro tai normaali päivä ---
-    if needs_early:
-        eu_start = op_start
-    else:
-        eu_start = NORMAL_START
-    eu_end = eu_start + TARGET
-    if eu_start < LUNCH_START < eu_end:
-        eu_end += 1
-    
-    shifts['Dayman EU'] = {
-        'start': eu_start,
-        'end': min(eu_end, 48),
-        'next_day_end': None,
-        'op_start_slot': op_start_slot,
-        'op_end_slot': op_end_slot
-    }
-
-    # --- DAYMAN PH1 ja PH2: Yövuoro, iltavuoro tai porrastettu ---
-    if needs_night:
-        # Yövuoro - laske optimaalinen aloitus
-        night_end_next_day = op_end - 48  # Kuinka pitkälle yö jatkuu seuraavana päivänä
-        
-        if arrival_start is not None:
-            # Kaikki daymanit ovat tulossa
-            # Tulo: arrival_start -> arrival_start + 2 (1h)
-            
-            # Onko tulo aamulla/päivällä vai illalla?
-            arrival_is_evening = arrival_start >= NORMAL_END  # Tulo klo 17 jälkeen
-            
-            if arrival_is_evening:
-                # ILTATULO: Tulo on illalla (esim. 21:00), operaatio yöllä (esim. 22:00-00:00)
-                # PH1 tekee päivävuoron + iltavuoron (tulo + operaatio)
-                # PH2 tekee normaalin päivän
-                
-                # Kuinka paljon työtä illalla? (tulo + operaatio)
-                evening_work_slots = 48 - arrival_start  # Tulosta keskiyöhön
-                
-                if evening_work_slots < TARGET_SLOTS:
-                    # JAETTU VUORO: aamupäivä + iltavuoro
-                    morning_slots = TARGET_SLOTS - evening_work_slots
-                    
-                    ph1_morning_start = NORMAL_START
-                    ph1_morning_end = ph1_morning_start + morning_slots
-                    if ph1_morning_start < LUNCH_START < ph1_morning_end:
-                        ph1_morning_end += 1
-                    
-                    shifts['Dayman PH1'] = {
-                        'start': ph1_morning_start,
-                        'end': ph1_morning_end,
-                        'night_start': arrival_start,  # Iltavuoro alkaa tulosta
-                        'night_end': 48,
-                        'next_day_end': night_end_next_day,
-                        'op_start_slot': op_start_slot,
-                        'op_end_slot': op_end_slot,
-                        'split_shift': True
-                    }
-                else:
-                    # Pelkkä iltavuoro riittää
-                    ph1_start = arrival_start
-                    shifts['Dayman PH1'] = {
-                        'start': ph1_start,
-                        'end': 48,
-                        'next_day_end': night_end_next_day,
-                        'op_start_slot': op_start_slot,
-                        'op_end_slot': op_end_slot
-                    }
-                
-                # PH2: normaali päivävuoro
-                ph2_start = NORMAL_START
-                ph2_end = ph2_start + TARGET_SLOTS
-                if ph2_start < LUNCH_START < ph2_end:
-                    ph2_end += 1
-                
-                shifts['Dayman PH2'] = {
-                    'start': ph2_start,
-                    'end': min(ph2_end, 48),
-                    'next_day_end': None,
-                    'op_start_slot': op_start_slot,
-                    'op_end_slot': op_end_slot
-                }
-            else:
-                # PÄIVÄTULO: Tulo on päivällä, operaatio jatkuu yöhön
-                # Vanha logiikka
-                
-                # PH2: aloittaa tulosta
-                ph2_start = arrival_start
-                ph2_max_end = 44  # 22:00 = slot 44
-                
-                ph2_slots = TARGET_SLOTS
-                if ph2_start < LUNCH_START:
-                    ph2_slots += 1
-                ph2_end = ph2_start + ph2_slots
-                ph2_end = min(ph2_end, ph2_max_end, 48)
-                
-                shifts['Dayman PH2'] = {
-                    'start': ph2_start,
-                    'end': ph2_end,
-                    'next_day_end': None,
-                    'op_start_slot': op_start_slot,
-                    'op_end_slot': op_end_slot
-                }
-                
-                # PH1: aamuvuoro + yövuoro
-                ph1_morning_start = NORMAL_START
-                ph1_morning_end = op_start
-                ph1_night_start = ph2_end
-                
-                ph1_morning_slots = ph1_morning_end - ph1_morning_start
-                ph1_night_slots = 48 - ph1_night_start
-                ph1_total_slots = ph1_morning_slots + ph1_night_slots
-                
-                if ph1_total_slots > MAX_SLOTS:
-                    excess = ph1_total_slots - TARGET_SLOTS
-                    ph1_morning_end = ph1_morning_end - excess
-                    ph1_morning_end = max(ph1_morning_end, arrival_end, NORMAL_START)
-                
-                shifts['Dayman PH1'] = {
-                    'start': ph1_morning_start,
-                    'end': ph1_morning_end,
-                    'night_start': ph1_night_start,
-                    'night_end': 48,
-                    'next_day_end': night_end_next_day,
-                    'op_start_slot': op_start_slot,
-                    'op_end_slot': op_end_slot,
-                    'split_shift': True
-                }
+    # Laske lepojaksot (ignoroi alle 1h tauot kuten lounastauko)
+    rest_periods = []
+    current_rest = 0
+    for is_rest in rest_slots:
+        if is_rest:
+            current_rest += 1
         else:
-            # Ei tuloa - tarkista tarvitaanko jaettu vuoro
-            
-            # Kuinka paljon työtä on illalla? (op_start -> 00:00)
-            evening_work_slots = 48 - op_start
-            
-            # Jos operaatio alkaa niin myöhään ettei 8.5h mahdu yhteen jaksoon,
-            # tarvitaan jaettu vuoro (aamu + ilta)
-            if evening_work_slots < TARGET_SLOTS:
-                # JAETTU VUORO: aamupäivä + iltavuoro
-                morning_slots = TARGET_SLOTS - evening_work_slots
-                
-                ph1_morning_start = NORMAL_START
-                ph1_morning_end = ph1_morning_start + morning_slots
-                if ph1_morning_start < LUNCH_START < ph1_morning_end:
-                    ph1_morning_end += 1
-                
-                shifts['Dayman PH1'] = {
-                    'start': ph1_morning_start,
-                    'end': ph1_morning_end,
-                    'night_start': op_start,  # Iltavuoro alkaa operaation alusta
-                    'night_end': 48,
-                    'next_day_end': night_end_next_day,
-                    'op_start_slot': op_start_slot,
-                    'op_end_slot': op_end_slot,
-                    'split_shift': True
-                }
-            else:
-                # Normaali yövuoro - operaatio alkaa tarpeeksi aikaisin
-                ph1_start = min(48 - TARGET_SLOTS, op_start)
-                
-                shifts['Dayman PH1'] = {
-                    'start': ph1_start,
-                    'end': 48,
-                    'next_day_end': night_end_next_day,
-                    'op_start_slot': op_start_slot,
-                    'op_end_slot': op_end_slot
-                }
-            
-            # PH2 normaali päivä
-            ph2_start = NORMAL_START
-            ph2_end = ph2_start + TARGET_SLOTS
-            if ph2_start < LUNCH_START < ph2_end:
-                ph2_end += 1
-            
-            shifts['Dayman PH2'] = {
-                'start': ph2_start,
-                'end': min(ph2_end, 48),
-                'next_day_end': None,
-                'op_start_slot': op_start_slot,
-                'op_end_slot': op_end_slot
-            }
-    elif needs_staggering:
-        # PORRASTETTU PÄIVÄVUORO
-        # Sääntö: klo 17-08 välillä max yksi dayman kerrallaan (paitsi tulo/lähtö)
-        # Kaikki daymanit ovat tulossa ja lähdössä
-        
-        # Laske tulon ja lähdön tunnit
-        arrival_slots = 2 if arrival_start is not None else 0  # 1h = 2 slottia
-        departure_slots = 2 if departure_end is not None else 0  # 1h = 2 slottia
-        
-        # Aikaisin sallittu aloitus (huomioi aikainen operaatio)
-        earliest_start = op_start if needs_early else NORMAL_START
-        
-        # Tarvitaanko iltakattavuutta? (operaatio jatkuu 17:00 jälkeen)
-        evening_needed = op_end > NORMAL_END or (departure_end and departure_end > NORMAL_END)
-        
-        if evening_needed:
-            # PH1: Iltavuoro - kattaa illan yksin
-            
-            if departure_start and departure_start > NORMAL_END:
-                ph1_evening_end = departure_start  # Loppuu lähdön alkuun (lähtö lisätään erikseen)
-            else:
-                ph1_evening_end = min(op_end, 48)
-            
-            # Milloin iltavuoro alkaa? Operaation alusta tai klo 17, kumpi on myöhemmin
-            ph1_evening_start = max(op_start, NORMAL_END) if op_start > NORMAL_END else NORMAL_END
-            
-            # Laske iltavuoron pituus
-            ph1_evening_slots = ph1_evening_end - ph1_evening_start
-            
-            # PH1:n kokonaistyöaika (EI vähennä tuloa/lähtöä koska ne lisätään erikseen)
-            ph1_work_slots = TARGET_SLOTS
-            
-            # Tarvitaanko jaettu vuoro? (iltavuoro ei riitä 8.5h:iin)
-            if ph1_evening_slots < ph1_work_slots:
-                # JAETTU VUORO: aamupäivä + iltavuoro
-                # Aamuvuoron pituus = 8.5h - iltavuoron pituus
-                ph1_morning_slots = ph1_work_slots - ph1_evening_slots
-                
-                ph1_morning_start = NORMAL_START
-                ph1_morning_end = ph1_morning_start + ph1_morning_slots
-                if ph1_morning_start < LUNCH_START < ph1_morning_end:
-                    ph1_morning_end += 1
-                
-                shifts['Dayman PH1'] = {
-                    'start': ph1_morning_start,
-                    'end': ph1_morning_end,
-                    'night_start': ph1_evening_start,
-                    'night_end': ph1_evening_end,
-                    'next_day_end': None,
-                    'op_start_slot': op_start_slot,
-                    'op_end_slot': op_end_slot,
-                    'split_shift': True
-                }
-            else:
-                # Normaali iltavuoro (ei taukoa)
-                ph1_start = ph1_evening_end - ph1_work_slots
-                if ph1_start < LUNCH_START < ph1_evening_end:
-                    ph1_start -= 1
-                ph1_start = max(ph1_start, earliest_start)
-                
-                shifts['Dayman PH1'] = {
-                    'start': ph1_start,
-                    'end': min(ph1_evening_end, 48),
-                    'next_day_end': None,
-                    'op_start_slot': op_start_slot,
-                    'op_end_slot': op_end_slot
-                }
-            
-            # EU ja PH2: Päivävuoro
-            # EU hoitaa aikaisen aamun yksin (ennen klo 08)
-            # PH2 aloittaa normaalisti klo 08
-            
-            # EU: aloittaa aikaisin jos operaatio vaatii
-            if arrival_start is not None:
-                eu_day_start = arrival_start + arrival_slots
-            else:
-                eu_day_start = earliest_start  # Huomioi aikainen operaatio
-            
-            # Työvuoron pituus = 8.5h - tulo - lähtö
-            day_work_slots = TARGET_SLOTS - arrival_slots - departure_slots
-            eu_day_end = eu_day_start + day_work_slots
-            if eu_day_start < LUNCH_START < eu_day_end:
-                eu_day_end += 1
-            
-            # Rajoita klo 17 (PH1 ottaa illan)
-            eu_day_end = min(eu_day_end, NORMAL_END)
-            
-            shifts['Dayman EU'] = {
-                'start': eu_day_start,
-                'end': eu_day_end,
-                'next_day_end': None,
-                'op_start_slot': op_start_slot,
-                'op_end_slot': op_end_slot
-            }
-            
-            # PH2: aloittaa normaalisti klo 08 (ei aikaista aamua)
-            if arrival_start is not None:
-                ph2_day_start = arrival_start + arrival_slots
-            else:
-                ph2_day_start = NORMAL_START  # Aina klo 08
-            
-            ph2_day_end = ph2_day_start + day_work_slots
-            if ph2_day_start < LUNCH_START < ph2_day_end:
-                ph2_day_end += 1
-            
-            # Rajoita klo 17 (PH1 ottaa illan)
-            ph2_day_end = min(ph2_day_end, NORMAL_END)
-            
-            shifts['Dayman PH2'] = {
-                'start': ph2_day_start,
-                'end': ph2_day_end,
-                'next_day_end': None,
-                'op_start_slot': op_start_slot,
-                'op_end_slot': op_end_slot
-            }
-        else:
-            # Ei iltakattavuutta - EU hoitaa aikaisen aamun, muut klo 08
-            
-            # EU: aloittaa aikaisin jos operaatio vaatii
-            if arrival_start is not None:
-                eu_day_start = arrival_start + arrival_slots
-            else:
-                eu_day_start = earliest_start
-            
-            day_work_slots = TARGET_SLOTS - arrival_slots - departure_slots
-            eu_day_end = eu_day_start + day_work_slots
-            if eu_day_start < LUNCH_START < eu_day_end:
-                eu_day_end += 1
-            
-            shifts['Dayman EU'] = {
-                'start': eu_day_start,
-                'end': min(eu_day_end, 48),
-                'next_day_end': None,
-                'op_start_slot': op_start_slot,
-                'op_end_slot': op_end_slot
-            }
-            
-            # PH1 ja PH2: aloittavat normaalisti klo 08
-            if arrival_start is not None:
-                normal_day_start = arrival_start + arrival_slots
-            else:
-                normal_day_start = NORMAL_START
-            
-            normal_day_end = normal_day_start + day_work_slots
-            if normal_day_start < LUNCH_START < normal_day_end:
-                normal_day_end += 1
-            
-            for name in ['Dayman PH1', 'Dayman PH2']:
-                shifts[name] = {
-                    'start': normal_day_start,
-                    'end': min(normal_day_end, 48),
-                    'next_day_end': None,
-                    'op_start_slot': op_start_slot,
-                    'op_end_slot': op_end_slot
-                }
-    elif op_end > NORMAL_END:
-        # Iltavuoro (ei yötä) - operaatio jatkuu klo 17 jälkeen
-        
-        # Milloin iltavuoro alkaa? Operaation alusta tai klo 17
-        evening_start = max(op_start, NORMAL_END)
-        evening_slots = op_end - evening_start
-        
-        # Tarvitaanko jaettu vuoro? (iltavuoro ei riitä 8.5h:iin)
-        if evening_slots < TARGET_SLOTS:
-            # JAETTU VUORO: aamupäivä + iltavuoro
-            morning_slots = TARGET_SLOTS - evening_slots
-            
-            ph1_morning_start = NORMAL_START
-            ph1_morning_end = ph1_morning_start + morning_slots
-            if ph1_morning_start < LUNCH_START < ph1_morning_end:
-                ph1_morning_end += 1
-            
-            shifts['Dayman PH1'] = {
-                'start': ph1_morning_start,
-                'end': ph1_morning_end,
-                'night_start': evening_start,
-                'night_end': op_end,
-                'next_day_end': None,
-                'op_start_slot': op_start_slot,
-                'op_end_slot': op_end_slot,
-                'split_shift': True
-            }
-        else:
-            # Normaali iltavuoro
-            ph1_end = op_end
-            ph1_start = ph1_end - TARGET
-            if ph1_start < LUNCH_START < ph1_end:
-                ph1_start -= 1
-            
-            shifts['Dayman PH1'] = {
-                'start': max(ph1_start, NORMAL_START),
-                'end': ph1_end,
-                'next_day_end': None,
-                'op_start_slot': op_start_slot,
-                'op_end_slot': op_end_slot
-            }
-        
-        # PH2 normaali päivä iltavuorossa
-        ph2_start = NORMAL_START
-        ph2_end = ph2_start + TARGET
-        if ph2_start < LUNCH_START < ph2_end:
-            ph2_end += 1
-        
-        shifts['Dayman PH2'] = {
-            'start': ph2_start,
-            'end': min(ph2_end, 48),
-            'next_day_end': None,
-            'op_start_slot': op_start_slot,
-            'op_end_slot': op_end_slot
-        }
-    else:
-        # Normaali päivä - kaikki tekevät 08-17
-        ph1_start = NORMAL_START
-        ph1_end = ph1_start + TARGET
-        if ph1_start < LUNCH_START < ph1_end:
-            ph1_end += 1
-        
-        shifts['Dayman PH1'] = {
-            'start': ph1_start,
-            'end': min(ph1_end, 48),
-            'next_day_end': None,
-            'op_start_slot': op_start_slot,
-            'op_end_slot': op_end_slot
-        }
-        
-        ph2_start = NORMAL_START
-        ph2_end = ph2_start + TARGET
-        if ph2_start < LUNCH_START < ph2_end:
-            ph2_end += 1
-        
-        shifts['Dayman PH2'] = {
-            'start': ph2_start,
-            'end': min(ph2_end, 48),
-            'next_day_end': None,
-            'op_start_slot': op_start_slot,
-            'op_end_slot': op_end_slot
-        }
-
-    return shifts
-
-
-# PÄIVÄVUOROT
-# ---------------------------------------------------------------------
-
-def calculate_day_shift_for_dayworker(worker, day_info, prev_day_info=None, port_shifts=None):
-    TARGET = 8.5
-    LUNCH_START = time_to_index(11, 30)
-    LUNCH_END = time_to_index(12, 0)
-    NORMAL_START = time_to_index(8, 0)
-    NORMAL_END = time_to_index(17, 0)
-    MIN_REST = 6
-
-    work = [False]*48
-    arr = [False]*48
-    dep = [False]*48
-    ops = [False]*48
-    notes = []
-
-    # Tulo (1h) - lisätään AINA jos dayman on töissä tuloaikaan
-    ah = day_info['arrival_hour']
-    am = day_info['arrival_minute']
-    arrival_hours = 0
-    arrival_start = None
-    arrival_end = None
-    if ah is not None:
-        arrival_start = time_to_index(ah, am)
-        arrival_end = arrival_start + 2
-        arrival_hours = 2
-
-    # Lähtö (1h) - lisätään AINA jos dayman on töissä lähtöaikaan
-    dh = day_info['departure_hour']
-    dm = day_info['departure_minute']
-    departure_hours = 0
-    departure_start = None
-    departure_end = None
-    if dh is not None:
-        departure_start = time_to_index(dh, dm)
-        departure_end = departure_start + 2
-        departure_hours = 1
-
-    # Satamaoperaatiovuoro
-    if port_shifts and worker in port_shifts:
-        sh = port_shifts[worker]
-        op_start_slot = sh.get('op_start_slot', 0)  # Operaation todellinen alkuaika
-        op_end_slot = sh.get('op_end_slot', 48)     # Operaation todellinen loppuaika
-        is_split_shift = sh.get('split_shift', False)  # Jaettu vuoro (aamu + yö)
-        
-        if is_split_shift:
-            # Jaettu vuoro: aamuvuoro + yövuoro
-            # Aamuvuoro
-            for i in range(sh['start'], sh['end']):
-                if 0 <= i < 48:
-                    work[i] = True
-                    if i >= op_start_slot and i < min(op_end_slot, 48):
-                        ops[i] = True
-            
-            # Yövuoro
-            night_start = sh.get('night_start', 48)
-            night_end = sh.get('night_end', 48)
-            for i in range(night_start, night_end):
-                if 0 <= i < 48:
-                    work[i] = True
-                    if i >= op_start_slot and i < min(op_end_slot, 48):
-                        ops[i] = True
-            
-            # Tulo - lisätään KOKO tulo (ei rajoiteta aamuvuoron loppuun)
-            if arrival_start is not None:
-                for i in range(arrival_start, min(arrival_end, 48)):
-                    work[i] = True
-                    arr[i] = True
-        else:
-            # Normaali yhtenäinen vuoro
-            if sh['start'] is not None:
-                for i in range(sh['start'], sh['end']):
-                    if 0 <= i < 48:
-                        work[i] = True
-                        # Merkitse S vain jos slot on operaatioajan sisällä
-                        if i >= op_start_slot and i < min(op_end_slot, 48):
-                            ops[i] = True
-        
-        # Tulo - lisätään AINA kaikille daymaneille (paitsi split shift, jossa jo lisätty)
-        if arrival_start is not None and not is_split_shift:
-            for i in range(arrival_start, min(arrival_end, 48)):
-                work[i] = True
-                arr[i] = True
-        
-        # Lähtö - lisätään AINA kaikille daymaneille
-        if departure_start is not None:
-            for i in range(departure_start, min(departure_end, 48)):
-                work[i] = True
-                dep[i] = True
-        
-        return {
-            'work_slots': work,
-            'arrival_slots': arr,
-            'departure_slots': dep,
-            'port_op_slots': ops,
-            'notes': ["Satamaoperaatio"],
-            'next_day_end': sh.get('next_day_end')
-        }
-
-    # Normaali päivävuoro (ei satamaoperaatiota)
+            if current_rest > 0:
+                hours = current_rest / 2
+                if hours >= 1.0:  # Vain yli 1h jaksot lasketaan
+                    rest_periods.append(hours)
+            current_rest = 0
+    if current_rest > 0:
+        hours = current_rest / 2
+        if hours >= 1.0:
+            rest_periods.append(hours)
     
-    # Lisää tulo
-    if arrival_start is not None:
-        for i in range(arrival_start, min(arrival_end, 48)):
-            work[i] = True
-            arr[i] = True
-
-    # Lisää lähtö
-    if departure_start is not None:
-        for i in range(departure_start, min(departure_end, 48)):
-            work[i] = True
-            dep[i] = True
-
-    remaining = TARGET - arrival_hours - departure_hours
-    slots_needed = int(remaining * 2)
-
-    earliest = NORMAL_START
-    latest = 48
-
-    # Esim. myöhäinen lähtö → aikaisempi päätyminen
-    if dh is not None and time_to_index(dh, dm) >= NORMAL_END:
-        latest = time_to_index(dh, dm)
-
-    # Rakenna vuoro
-    slot = earliest
-    added = 0
-
-    while added < slots_needed and slot < latest:
-        if LUNCH_START <= slot < LUNCH_END:
-            slot = LUNCH_END
-            continue
-        if work[slot]:
-            slot += 1
-            continue
-        work[slot] = True
-        added += 1
-        slot += 1
-
+    # Yhdistä yölepo jos se jatkuu päivien yli
+    if len(rest_periods) >= 2:
+        if not work_slots_48h[47] and not work_slots_48h[0]:
+            combined = rest_periods[-1] + rest_periods[0]
+            rest_periods = [combined] + rest_periods[1:-1]
+    
+    total_rest = sum(rest_periods)
+    longest_rest = max(rest_periods) if rest_periods else 0
+    rest_period_count = len(rest_periods)
+    
+    issues = []
+    if total_rest < 10:
+        issues.append(f"Lepoa vain {total_rest}h (min 10h)")
+    if rest_period_count > 2:
+        issues.append(f"Lepo {rest_period_count} osassa (max 2)")
+    if longest_rest < 6:
+        issues.append(f"Pisin lepo {longest_rest}h (min 6h)")
+    
     return {
-        'work_slots': work,
-        'arrival_slots': arr,
-        'departure_slots': dep,
-        'port_op_slots': ops,
-        'notes': notes,
-        'next_day_end': None
-    }
-
-def calculate_day_shift_for_watchman(worker, day_info):
-    work = [False]*48
-    arr = [False]*48
-    dep = [False]*48
-
-    base = {
-        'Watchman 1': [(time_to_index(8), time_to_index(12)),
-                       (time_to_index(20), time_to_index(24))],
-        'Watchman 2': [(time_to_index(12), time_to_index(16)),
-                       (time_to_index(0), time_to_index(4))],
-        'Watchman 3': [(time_to_index(16), time_to_index(20)),
-                       (time_to_index(4), time_to_index(8))]
-    }
-
-    for s,e in base[worker]:
-        for i in range(s, min(e, 48)):
-            work[i] = True
-
-    ah = day_info['arrival_hour']
-    am = day_info['arrival_minute']
-    if ah is not None and get_watchman_on_duty(ah) == worker:
-        s = time_to_index(ah, am); e = s + 2
-        for i in range(s, min(e, 48)):
-            work[i] = True
-            arr[i] = True
-
-    dh = day_info['departure_hour']
-    dm = day_info['departure_minute']
-    if dh is not None and get_watchman_on_duty(dh) == worker:
-        s = time_to_index(dh, dm); e = s + 2
-        for i in range(s, min(e, 48)):
-            work[i] = True
-            dep[i] = True
-
-    return {
-        'work_slots': work,
-        'arrival_slots': arr,
-        'departure_slots': dep,
-        'port_op_slots': [False]*48,
-        'notes': [],
-        'next_day_end': None
+        'total_rest': total_rest,
+        'rest_period_count': rest_period_count,
+        'longest_rest': longest_rest,
+        'status': 'OK' if not issues else 'RIKE',
+        'issues': issues
     }
 
 
-# PÄÄFUNKTIO STREAMLITILLE
-# ---------------------------------------------------------------------
-
-def generate_schedule(days_data, output_path=None):
+def generate_schedule(days_data):
     """
-    Luo työvuorot ja STCW-analyysin.
-    Palauttaa (Workbook, all_days, report_str)
+    Generoi työvuorot kaikille päiville.
+    
+    days_data: lista dictionaryja, joissa:
+        - arrival_hour, arrival_minute (tai None)
+        - departure_hour, departure_minute (tai None)  
+        - port_op_start_hour, port_op_start_minute
+        - port_op_end_hour, port_op_end_minute
     """
-
+    
+    NORMAL_START = time_to_index(8, 0)   # 16
+    NORMAL_END = time_to_index(17, 0)     # 34
+    LUNCH_START = time_to_index(11, 30)   # 23
+    LUNCH_END = time_to_index(12, 0)      # 24
+    TARGET_SLOTS = 17  # 8.5h
+    MAX_SLOTS = 18     # 9h
+    
     workers = ['Bosun', 'Dayman EU', 'Dayman PH1', 'Dayman PH2',
                'Watchman 1', 'Watchman 2', 'Watchman 3']
-
     daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
-
+    
     all_days = {w: [] for w in workers}
-    prev_ops = {}
     num_days = len(days_data)
-
-    # ---- LASKENTA ----
+    
+    # ========================================
+    # VAIHE 1: Analysoi koko jakso etukäteen
+    # ========================================
+    
+    # Tunnista jatkuvat operaatiot (päivä N loppuu 00:00, päivä N+1 alkaa 00:00)
+    continuous_nights = []  # Lista: (day_index, night_worker)
+    
+    for d in range(num_days - 1):
+        curr = days_data[d]
+        next_day = days_data[d + 1]
+        
+        curr_op_end = curr.get('port_op_end_hour')
+        next_op_start = next_day.get('port_op_start_hour')
+        
+        if curr_op_end == 0 and next_op_start == 0:
+            # Jatkuva operaatio yön yli
+            # PH1 tekee yleensä illan, joten PH2 tekee yön jatkon
+            continuous_nights.append((d, 'Dayman PH2'))
+    
+    # ========================================
+    # VAIHE 2: Laske vuorot päivä kerrallaan
+    # ========================================
+    
     for d, info in enumerate(days_data):
-        prev = days_data[d-1] if d>0 else None
-        ops = None
-
-        if info['port_op_start_hour'] is not None:
-            ops = calculate_port_operation_shifts(
-                info['port_op_start_hour'],
-                info['port_op_start_minute'],
-                info['port_op_end_hour'],
-                info['port_op_end_minute'],
-                arrival_hour=info.get('arrival_hour'),
-                departure_hour=info.get('departure_hour')
-            )
-
-        for w in workers:
-            if w == "Bosun":
-                res = calculate_day_shift_for_dayworker(w, info, prev, None)
-            elif w in daymen:
-                if d>0 and w in prev_ops and prev_ops[w].get('next_day_end'):
-                    # yövuoron jatko
-                    ns = prev_ops[w]['next_day_end']
-                    work = [False]*48
-                    opsl = [False]*48
-                    arrl = [False]*48
-                    depl = [False]*48
-                    
-                    for i in range(0, ns):
-                        work[i] = True
-                        opsl[i] = True
-                    
-                    # Laske päivävuoron aloitus:
-                    # - Vähintään 6h lepo yövuoron jälkeen
-                    # - Mutta ei ennen klo 08:00 (normaali työajan alku)
-                    NORMAL_START = time_to_index(8, 0)  # klo 08:00 = slot 16
-                    min_rest_slots = 12  # 6h = 12 puolituntia
-                    earliest_after_rest = ns + min_rest_slots
-                    slot = max(earliest_after_rest, NORMAL_START)  # Ei ennen klo 08!
-                    
-                    rem = 17 - ns  # Jäljellä olevat työtunnit (slotteina)
-                    L1 = time_to_index(11,30)
-                    L2 = time_to_index(12,0)
-                    a=0
-                    while a < rem and slot < 48:
-                        if L1 <= slot < L2:
-                            slot = L2; continue
-                        work[slot] = True
-                        a+=1; slot+=1
-                    
-                    # Lisää tulo jos dayman on töissä tuloaikaan
-                    ah = info['arrival_hour']
-                    am = info['arrival_minute']
-                    if ah is not None:
-                        arr_start = time_to_index(ah, am)
-                        arr_end = arr_start + 4
-                        for i in range(arr_start, min(arr_end, 48)):
-                            if work[i]:  # Jos on jo töissä
-                                arrl[i] = True
-                    
-                    # Lisää lähtö jos dayman on töissä lähtöaikaan
-                    dh = info['departure_hour']
-                    dm = info['departure_minute']
-                    if dh is not None:
-                        dep_start = time_to_index(dh, dm)
-                        dep_end = dep_start + 2
-                        for i in range(dep_start, min(dep_end, 48)):
-                            if work[i]:  # Jos on jo töissä
-                                depl[i] = True
-                    
-                    res = {
-                        'work_slots': work,
-                        'arrival_slots': arrl,
-                        'departure_slots': depl,
-                        'port_op_slots':opsl,
-                        'notes':['Yövuoron jälkeen päivävuoro'],
-                        'next_day_end': None
-                    }
-                else:
-                    res = calculate_day_shift_for_dayworker(w, info, prev, ops)
+        
+        # Hae operaation ajat
+        op_start_h = info.get('port_op_start_hour')
+        op_start_m = info.get('port_op_start_minute', 0)
+        op_end_h = info.get('port_op_end_hour')
+        op_end_m = info.get('port_op_end_minute', 0)
+        
+        arrival_h = info.get('arrival_hour')
+        arrival_m = info.get('arrival_minute', 0)
+        departure_h = info.get('departure_hour')
+        departure_m = info.get('departure_minute', 0)
+        
+        # Muunna indekseiksi
+        if op_start_h is not None:
+            op_start = time_to_index(op_start_h, op_start_m)
+            if op_end_h < op_start_h:
+                op_end = time_to_index(op_end_h, op_end_m) + 48
+            elif op_end_h == 0 and op_start_h > 0:
+                op_end = 48  # Keskiyöhön
             else:
-                res = calculate_day_shift_for_watchman(w, info)
-
-            all_days[w].append(res)
-
-        prev_ops = ops or {}
-
-    # ---- EXCEL ----
-    wb = Workbook()
-
-    C_WORK  = PatternFill('solid', fgColor='4472C4')
-    C_ARR   = PatternFill('solid', fgColor='FFC000')
-    C_DEP   = PatternFill('solid', fgColor='9966FF')
-    C_OP    = PatternFill('solid', fgColor='00B050')
-    C_HDR   = PatternFill('solid', fgColor='D9D9D9')
-    C_WARN  = PatternFill('solid', fgColor='FF6B6B')
-    C_OK    = PatternFill('solid', fgColor='92D050')
-
-    thin = Border(left=Side(style='thin'),right=Side(style='thin'),
-                  top=Side(style='thin'),bottom=Side(style='thin'))
-
-    for d in range(num_days):
-        sheet = wb.active if d==0 else wb.create_sheet()
-        sheet.title = f"Päivä {d+1}"
-
-        # aikarivi
-        for h in range(24):
-            col = 2 + h*2
-            c = sheet.cell(row=1, column=col)
-            c.value = h
-            c.fill = C_HDR
-            c.font = Font(bold=True)
-            c.alignment = Alignment(horizontal='center')
-            sheet.merge_cells(start_row=1, start_column=col,
-                              end_row=1, end_column=col+1)
-
-        sheet.column_dimensions['A'].width = 14
-        for col in range(2,50):
-            sheet.column_dimensions[get_column_letter(col)].width = 2.5
-
-        # STCW-pylväät
-        if d>0:
-            hdr = ["Työ (h)","Lepo (h)","Pisin lepo","Status"]
-            for i,hname in enumerate(hdr):
-                col = 51+i
-                cell = sheet.cell(row=1, column=col)
-                cell.value=hname
-                cell.fill=C_HDR
-                cell.font=Font(bold=True)
-                cell.alignment=Alignment(horizontal='center')
-
-        # työntekijät
-        for r,w in enumerate(workers, start=2):
-            data = all_days[w][d]
-            work=data['work_slots']; arr=data['arrival_slots']
-            dep =data['departure_slots']; ops=data['port_op_slots']
-
-            nm = sheet.cell(row=r, column=1)
-            nm.value=w
-            nm.font=Font(bold=True)
-            nm.border=thin
-
-            for t in range(48):
-                c = sheet.cell(row=r, column=2+t)
-                c.border=thin
-                if arr[t]:
-                    c.fill = C_ARR; c.value="B"
-                    c.alignment=Alignment(horizontal='center')
-                elif dep[t]:
-                    c.fill = C_DEP; c.value="C"
-                    c.alignment=Alignment(horizontal='center')
-                elif ops[t]:
-                    c.fill = C_WORK  # Sama väri kuin normaali työ
-                    c.alignment=Alignment(horizontal='center')
-                elif work[t]:
-                    c.fill = C_WORK
-
-            # STCW
-            if d>0:
-                prev_work = all_days[w][d-1]['work_slots']
-                combined = prev_work + work
-                ana = analyze_stcw_from_work_starts(combined)
+                op_end = time_to_index(op_end_h, op_end_m)
+        else:
+            op_start = NORMAL_START
+            op_end = NORMAL_END
+        
+        arrival_start = time_to_index(arrival_h, arrival_m) if arrival_h is not None else None
+        arrival_end = arrival_start + 2 if arrival_start is not None else None  # 1h tulo
+        
+        departure_start = time_to_index(departure_h, departure_m) if departure_h is not None else None
+        departure_end = departure_start + 2 if departure_start is not None else None  # 1h lähtö
+        
+        # Onko tämä päivä jatkuvan yön jälkeen?
+        continues_from_night = False
+        night_worker = None
+        for (night_day, worker) in continuous_nights:
+            if night_day == d - 1:
+                continues_from_night = True
+                night_worker = worker
+                break
+        
+        # Onko tämä päivä jatkuvan yön alussa?
+        starts_night = False
+        for (night_day, worker) in continuous_nights:
+            if night_day == d:
+                starts_night = True
+                break
+        
+        # ========================================
+        # BOSUN
+        # ========================================
+        bosun_work = [False] * 48
+        bosun_arr = [False] * 48
+        bosun_dep = [False] * 48
+        bosun_ops = [False] * 48
+        
+        # Normaali päivävuoro
+        slot = NORMAL_START
+        slots_worked = 0
+        while slots_worked < TARGET_SLOTS and slot < 48:
+            if LUNCH_START <= slot < LUNCH_END:
+                slot += 1
+                continue
+            bosun_work[slot] = True
+            if op_start <= slot < min(op_end, 48):
+                bosun_ops[slot] = True
+            slots_worked += 1
+            slot += 1
+        
+        # Tulo
+        if arrival_start is not None:
+            for i in range(arrival_start, min(arrival_end, 48)):
+                bosun_work[i] = True
+                bosun_arr[i] = True
+        
+        # Lähtö
+        if departure_start is not None:
+            for i in range(departure_start, min(departure_end, 48)):
+                bosun_work[i] = True
+                bosun_dep[i] = True
+        
+        all_days['Bosun'].append({
+            'work_slots': bosun_work,
+            'arrival_slots': bosun_arr,
+            'departure_slots': bosun_dep,
+            'port_op_slots': bosun_ops,
+            'notes': []
+        })
+        
+        # ========================================
+        # DAYMANIT
+        # ========================================
+        
+        for dayman in daymen:
+            work = [False] * 48
+            arr = [False] * 48
+            dep = [False] * 48
+            ops = [False] * 48
+            notes = []
+            
+            # ---- JATKUVAN YÖN KÄSITTELY ----
+            
+            if continues_from_night and dayman == night_worker:
+                # Tämä dayman tekee yövuoron jatkon (00:00 -> ~08:00)
+                notes.append('Yövuoron jatko')
                 
-                # Päivän todelliset työtunnit (ei 24h ikkunan)
-                actual_work_hours = sum(work) / 2
-
-                sheet.cell(row=r,column=51).value = actual_work_hours
-                sheet.cell(row=r,column=52).value = ana['total_rest']
-                sheet.cell(row=r,column=53).value = ana['longest_rest']
-
-                stc = sheet.cell(row=r, column=54)
-                stc.value = ana['status']
-                stc.font = Font(bold=True)
-                stc.alignment = Alignment(horizontal='center')
-                stc.fill = C_OK if ana['status']=="OK" else C_WARN
-
-    # tallenna halutessa
-    if output_path:
-        wb.save(output_path)
-
-    # ---- TEKSTIRAPORTTI ----
-    lines=[]
-    lines.append("="*60)
-    lines.append("TYÖVUOROT JA LEPOAIKA-ANALYYSI")
-    lines.append("="*60)
-
-    for d in range(num_days):
-        lines.append(f"\n--- PÄIVÄ {d+1} ---")
-        for w in workers:
-            dat = all_days[w][d]
-            h = sum(dat['work_slots'])/2
-            notes = f" ({', '.join(dat['notes'])})" if dat['notes'] else ""
-
-            if d==0:
-                lines.append(f"  {w}: {h}h työtä{notes}")
+                # Työskentele 00:00 alkaen kunnes tarpeeksi tunteja
+                slot = 0
+                slots_worked = 0
+                target = TARGET_SLOTS
+                
+                while slots_worked < target and slot < NORMAL_START + 2:  # Max klo 09:00
+                    work[slot] = True
+                    if slot < min(op_end, 48):
+                        ops[slot] = True
+                    slots_worked += 1
+                    slot += 1
+                
+                # Lähtö
+                if departure_start is not None:
+                    for i in range(departure_start, min(departure_end, 48)):
+                        work[i] = True
+                        dep[i] = True
+                
+                all_days[dayman].append({
+                    'work_slots': work,
+                    'arrival_slots': arr,
+                    'departure_slots': dep,
+                    'port_op_slots': ops,
+                    'notes': notes
+                })
+                continue
+            
+            if continues_from_night and dayman != night_worker:
+                # Muut daymanit: normaali päivävuoro, mutta myöhempi aloitus
+                # jotta yötyöntekijällä on aikaa
+                
+                if dayman == 'Dayman PH1':
+                    # PH1 teki illan edellisenä päivänä -> aloittaa myöhemmin
+                    start_slot = NORMAL_START + 12  # 14:00
+                    notes.append('Lepo iltavuoron jälkeen')
+                else:
+                    # EU aloittaa normaalisti
+                    start_slot = NORMAL_START
+                
+                slot = start_slot
+                slots_worked = 0
+                while slots_worked < TARGET_SLOTS and slot < 48:
+                    if LUNCH_START <= slot < LUNCH_END:
+                        slot += 1
+                        continue
+                    work[slot] = True
+                    if op_start <= slot < min(op_end, 48):
+                        ops[slot] = True
+                    slots_worked += 1
+                    slot += 1
+                
+                # Lähtö
+                if departure_start is not None:
+                    for i in range(departure_start, min(departure_end, 48)):
+                        work[i] = True
+                        dep[i] = True
+                
+                all_days[dayman].append({
+                    'work_slots': work,
+                    'arrival_slots': arr,
+                    'departure_slots': dep,
+                    'port_op_slots': ops,
+                    'notes': notes
+                })
+                continue
+            
+            # ---- NORMAALI PÄIVÄ TAI ILTA/YÖ ----
+            
+            # Onko iltavuoro tarpeen?
+            # op_end > 48 tarkoittaa että operaatio jatkuu keskiyön yli -> iltavuoro tarvitaan
+            needs_evening = (op_end > NORMAL_END and op_end <= 48) or op_end > 48
+            needs_night_today = starts_night
+            
+            # Iltavuoro jatkuu lähtöön asti jos lähtö on operaation jälkeen
+            evening_extends_to_departure = departure_start is not None and departure_start > min(op_end, 48)
+            
+            if dayman == 'Dayman PH1' and (needs_evening or needs_night_today):
+                # PH1 tekee iltavuoron
+                notes.append('Iltavuoro')
+                
+                # Laske iltavuoron alku ja loppu
+                if needs_night_today:
+                    evening_end = 48  # Keskiyöhön
+                elif evening_extends_to_departure:
+                    evening_end = departure_start  # Jatka lähtöön asti
+                else:
+                    evening_end = min(op_end, 48)
+                
+                evening_start = max(op_start, NORMAL_END) if op_start > NORMAL_END else NORMAL_END
+                evening_slots = evening_end - evening_start
+                
+                # Tarvitaanko aamuvuoro?
+                if evening_slots < TARGET_SLOTS:
+                    # Jaettu vuoro: aamu + ilta
+                    morning_slots = TARGET_SLOTS - evening_slots
+                    
+                    # Aamuvuoro
+                    slot = NORMAL_START
+                    slots_worked = 0
+                    while slots_worked < morning_slots and slot < evening_start:
+                        if LUNCH_START <= slot < LUNCH_END:
+                            slot += 1
+                            continue
+                        work[slot] = True
+                        if op_start <= slot < min(op_end, 48):
+                            ops[slot] = True
+                        slots_worked += 1
+                        slot += 1
+                
+                # Iltavuoro
+                for i in range(evening_start, evening_end):
+                    work[i] = True
+                    if op_start <= i < min(op_end, 48):
+                        ops[i] = True
+                
+                # Tulo (jos on)
+                if arrival_start is not None:
+                    for i in range(arrival_start, min(arrival_end, 48)):
+                        work[i] = True
+                        arr[i] = True
+                
+                # Lähtö
+                if departure_start is not None:
+                    for i in range(departure_start, min(departure_end, 48)):
+                        work[i] = True
+                        dep[i] = True
+                
+            elif dayman == 'Dayman PH2' and starts_night:
+                # PH2 lepää yötä varten - lyhyempi päivä, ei tuloa
+                notes.append('Lepää yövuoroa varten')
+                
+                slot = NORMAL_START
+                slots_worked = 0
+                # Lyhyempi päivä: max 8h jotta riittää lepo
+                max_slots = 16  # 8h
+                while slots_worked < max_slots and slot < NORMAL_END:
+                    if LUNCH_START <= slot < LUNCH_END:
+                        slot += 1
+                        continue
+                    work[slot] = True
+                    if op_start <= slot < min(op_end, 48):
+                        ops[slot] = True
+                    slots_worked += 1
+                    slot += 1
+                
+                # EI tuloa - PH2 lepää
+                
             else:
-                prev = all_days[w][d-1]['work_slots']
-                ana = analyze_stcw_from_work_starts(prev + dat['work_slots'])
-                icon = "✓" if ana['status']=="OK" else "⚠"
-                lines.append(
-                    f"{icon} {w}: {h}h työtä, Lepo {ana['total_rest']}h, "
-                    f"Pisin lepo {ana['longest_rest']}h{notes}"
-                )
-                for issue in ana['issues']:
-                    lines.append(f"    - {issue}")
-
-    report = "\n".join(lines)
+                # Normaali päivävuoro (EU tai PH2 normaalisti)
+                
+                # Aikainen aloitus?
+                if op_start < NORMAL_START and dayman == 'Dayman EU':
+                    start_slot = op_start
+                    notes.append('Aikainen aamuvuoro')
+                else:
+                    start_slot = NORMAL_START
+                
+                slot = start_slot
+                slots_worked = 0
+                while slots_worked < TARGET_SLOTS and slot < 48:
+                    if LUNCH_START <= slot < LUNCH_END:
+                        slot += 1
+                        continue
+                    work[slot] = True
+                    if op_start <= slot < min(op_end, 48):
+                        ops[slot] = True
+                    slots_worked += 1
+                    slot += 1
+                
+                # Tulo
+                if arrival_start is not None and not (dayman == 'Dayman PH2' and starts_night):
+                    for i in range(arrival_start, min(arrival_end, 48)):
+                        work[i] = True
+                        arr[i] = True
+                
+                # Lähtö
+                if departure_start is not None:
+                    for i in range(departure_start, min(departure_end, 48)):
+                        work[i] = True
+                        dep[i] = True
+            
+            all_days[dayman].append({
+                'work_slots': work,
+                'arrival_slots': arr,
+                'departure_slots': dep,
+                'port_op_slots': ops,
+                'notes': notes
+            })
+        
+        # ========================================
+        # WATCHMANIT (4-on-8-off)
+        # ========================================
+        
+        watch_schedules = {
+            'Watchman 1': [(0, 4), (12, 16)],    # 00-04, 12-16
+            'Watchman 2': [(4, 8), (16, 20)],    # 04-08, 16-20
+            'Watchman 3': [(8, 12), (20, 24)]    # 08-12, 20-24
+        }
+        
+        for watchman, shifts in watch_schedules.items():
+            work = [False] * 48
+            arr = [False] * 48
+            dep = [False] * 48
+            ops = [False] * 48
+            
+            for (start_h, end_h) in shifts:
+                start_slot = start_h * 2
+                end_slot = end_h * 2
+                for i in range(start_slot, end_slot):
+                    work[i] = True
+            
+            all_days[watchman].append({
+                'work_slots': work,
+                'arrival_slots': arr,
+                'departure_slots': dep,
+                'port_op_slots': ops,
+                'notes': []
+            })
+    
+    # ========================================
+    # EXCEL-GENEROINTI
+    # ========================================
+    
+    wb = Workbook()
+    wb.remove(wb.active)
+    
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    
+    for d in range(num_days):
+        ws = wb.create_sheet(title=f"Päivä {d+1}")
+        
+        # Otsikkorivi
+        ws.cell(row=1, column=1, value="Nimi")
+        for col in range(48):
+            h = col // 2
+            m = "00" if col % 2 == 0 else "30"
+            ws.cell(row=1, column=col+2, value=f"{h:02d}:{m}")
+            ws.cell(row=1, column=col+2).alignment = Alignment(textRotation=90)
+        ws.cell(row=1, column=50, value="Tunnit")
+        
+        row = 2
+        for w in workers:
+            ws.cell(row=row, column=1, value=w)
+            
+            data = all_days[w][d]
+            work = data['work_slots']
+            arr = data['arrival_slots']
+            dep = data['departure_slots']
+            ops = data['port_op_slots']
+            
+            hours = sum(work) / 2
+            
+            for col in range(48):
+                cell = ws.cell(row=row, column=col+2)
+                cell.border = thin_border
+                
+                if work[col]:
+                    if arr[col]:
+                        cell.fill = GREEN
+                        cell.value = "T"
+                    elif dep[col]:
+                        cell.fill = BLUE
+                        cell.value = "L"
+                    elif ops[col]:
+                        cell.fill = YELLOW
+                        cell.value = "S"
+                    else:
+                        cell.fill = ORANGE
+                        cell.value = "X"
+                else:
+                    cell.fill = WHITE
+            
+            ws.cell(row=row, column=50, value=hours)
+            row += 1
+        
+        # Sarakeleveydet
+        ws.column_dimensions['A'].width = 15
+        for col in range(2, 50):
+            ws.column_dimensions[get_column_letter(col)].width = 3
+    
+    # STCW-raportti
+    report = []
+    for w in workers:
+        if len(all_days[w]) >= 2:
+            work1 = all_days[w][0]['work_slots']
+            work2 = all_days[w][1]['work_slots']
+            combined = work1 + work2
+            ana = analyze_stcw_from_work_starts(combined)
+            report.append({
+                'worker': w,
+                'analysis': ana
+            })
+    
     return wb, all_days, report
+
+
+# Testaus
+if __name__ == "__main__":
+    days_data = [
+        {
+            'arrival_hour': 21, 'arrival_minute': 0,
+            'departure_hour': None, 'departure_minute': 0,
+            'port_op_start_hour': 22, 'port_op_start_minute': 0,
+            'port_op_end_hour': 0, 'port_op_end_minute': 0
+        },
+        {
+            'arrival_hour': None, 'arrival_minute': 0,
+            'departure_hour': 19, 'departure_minute': 0,
+            'port_op_start_hour': 0, 'port_op_start_minute': 0,
+            'port_op_end_hour': 18, 'port_op_end_minute': 0
+        }
+    ]
+    
+    wb, all_days, report = generate_schedule(days_data)
+    
+    print("=== Päivä 1 ===")
+    for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
+        work = all_days[w][0]['work_slots']
+        hours = sum(work) / 2
+        
+        ranges = []
+        start = None
+        for i, x in enumerate(work):
+            if x and start is None:
+                start = i
+            elif not x and start is not None:
+                ranges.append(f"{index_to_time_str(start)}-{index_to_time_str(i)}")
+                start = None
+        if start is not None:
+            ranges.append(f"{index_to_time_str(start)}-00:00")
+        
+        print(f"  {w}: {hours}h | {' + '.join(ranges)}")
+    
+    print("\n=== Päivä 2 ===")
+    for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
+        work = all_days[w][1]['work_slots']
+        hours = sum(work) / 2
+        
+        ranges = []
+        start = None
+        for i, x in enumerate(work):
+            if x and start is None:
+                start = i
+            elif not x and start is not None:
+                ranges.append(f"{index_to_time_str(start)}-{index_to_time_str(i)}")
+                start = None
+        if start is not None:
+            ranges.append(f"{index_to_time_str(start)}-00:00")
+        
+        print(f"  {w}: {hours}h | {' + '.join(ranges)}")
+    
+    print("\n=== STCW ===")
+    for r in report:
+        if 'Dayman' in r['worker']:
+            ana = r['analysis']
+            status = '✓' if ana['status'] == 'OK' else '⚠'
+            print(f"  {r['worker']}: {ana['total_rest']}h lepo, {ana['rest_period_count']} jaksoa {status}")
