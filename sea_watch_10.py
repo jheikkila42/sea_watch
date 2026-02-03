@@ -26,6 +26,13 @@ def index_to_time_str(idx):
     m = "30" if idx % 2 else "00"
     return f"{h:02d}:{m}"
 
+def parse_time(time_str):
+    """Parsii ajan merkkijonosta (HH:MM) tunneiksi ja minuuteiksi"""
+    if not time_str or time_str == "None":
+        return None, 0
+    parts = time_str.split(":")
+    return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+
 def analyze_stcw_from_work_starts(work_slots_48h):
     """
     Analysoi STCW-lepoajat 48h (2 päivän) työvuorolistasta.
