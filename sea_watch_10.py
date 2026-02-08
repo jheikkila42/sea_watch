@@ -340,6 +340,18 @@ def generate_schedule(days_data):
                     for i in range(departure_start, min(departure_end, 48)):
                         work[i] = True
                         dep[i] = True
+
+            def finalize_dayman_day():
+                apply_arrival_departure()
+                prev_work = all_days[dayman][d - 1]['work_slots'] if d > 0 else [False] * 48
+                ensure_min_dayman_hours(work, prev_work, time_to_index(8, 0))
+                all_days[dayman].append({
+                    'work_slots': work,
+                    'arrival_slots': arr,
+                    'departure_slots': dep,
+                    'port_op_slots': ops,
+                    'notes': notes
+                })
             
             # ---- JATKUVAN YÖN KÄSITTELY ----
             
@@ -357,14 +369,7 @@ def generate_schedule(days_data):
                         if slot < min(op_end, 48):
                             ops[slot] = True
 
-                apply_arrival_departure()
-                all_days[dayman].append({
-                    'work_slots': work,
-                    'arrival_slots': arr,
-                    'departure_slots': dep,
-                    'port_op_slots': ops,
-                    'notes': notes
-                })
+                finalize_dayman_day()
                 continue
             
             if continues_from_night and dayman not in (early_worker, late_worker):
@@ -391,15 +396,7 @@ def generate_schedule(days_data):
                     slots_worked += 1
                     slot += 1
                 
-                apply_arrival_departure()
-
-                all_days[dayman].append({
-                    'work_slots': work,
-                    'arrival_slots': arr,
-                    'departure_slots': dep,
-                    'port_op_slots': ops,
-                    'notes': notes
-                })
+                finalize_dayman_day()
                 continue
             
             # ---- NORMAALI PÄIVÄ TAI ILTA/YÖ ----
@@ -451,8 +448,6 @@ def generate_schedule(days_data):
                     if op_start <= i < min(op_end, 48):
                         ops[i] = True
                 
-                apply_arrival_departure()
-                
             elif dayman == 'Dayman PH2' and starts_night:
                 # PH2 lepää yötä varten - lyhyempi päivä
                 notes.append('Lepää yövuoroa varten')
@@ -470,8 +465,6 @@ def generate_schedule(days_data):
                         ops[slot] = True
                     slots_worked += 1
                     slot += 1
-                
-                apply_arrival_departure()
                 
             else:
                 # Normaali päivävuoro (EU tai PH2 normaalisti)
@@ -495,18 +488,7 @@ def generate_schedule(days_data):
                     slots_worked += 1
                     slot += 1
                 
-                apply_arrival_departure()
-            
-            prev_work = all_days[dayman][d - 1]['work_slots'] if d > 0 else [False] * 48
-            ensure_min_dayman_hours(work, prev_work, time_to_index(8, 0))
-
-            all_days[dayman].append({
-                'work_slots': work,
-                'arrival_slots': arr,
-                'departure_slots': dep,
-                'port_op_slots': ops,
-                'notes': notes
-            })
+            finalize_dayman_day()
         
         # ========================================
         # WATCHMANIT (4-on-8-off)
