@@ -342,7 +342,6 @@ def generate_schedule(days_data):
                         dep[i] = True
 
             def finalize_dayman_day():
-                apply_arrival_departure()
                 prev_work = all_days[dayman][d - 1]['work_slots'] if d > 0 else [False] * 48
                 ensure_min_dayman_hours(work, prev_work, time_to_index(8, 0))
                 all_days[dayman].append({
@@ -354,6 +353,7 @@ def generate_schedule(days_data):
                 })
             
             # ---- JATKUVAN YÖN KÄSITTELY ----
+            apply_arrival_departure()
             
             if continues_from_night and dayman in (early_worker, late_worker):
                 if dayman == early_worker:
@@ -385,7 +385,7 @@ def generate_schedule(days_data):
                     start_slot = NORMAL_START
                 
                 slot = start_slot
-                slots_worked = 0
+                slots_worked = sum(work)
                 while slots_worked < TARGET_SLOTS and slot < 48:
                     if LUNCH_START <= slot < LUNCH_END:
                         slot += 1
@@ -412,7 +412,7 @@ def generate_schedule(days_data):
             if dayman == 'Dayman PH1' and (needs_evening or needs_night_today):
                 # PH1 tekee iltavuoron
                 notes.append('Iltavuoro')
-                
+
                 # Laske iltavuoron alku ja loppu
                 if needs_night_today:
                     evening_end = 48  # Keskiyöhön
@@ -420,40 +420,33 @@ def generate_schedule(days_data):
                     evening_end = departure_start  # Jatka lähtöön asti
                 else:
                     evening_end = min(op_end, 48)
-                
+
                 evening_start = max(op_start, NORMAL_END) if op_start > NORMAL_END else NORMAL_END
-                evening_slots = evening_end - evening_start
-                
-                # Tarvitaanko aamuvuoro?
-                if evening_slots < TARGET_SLOTS:
-                    # Jaettu vuoro: aamu + ilta
-                    morning_slots = TARGET_SLOTS - evening_slots
-                    
-                    # Aamuvuoro
-                    slot = NORMAL_START
-                    slots_worked = 0
-                    while slots_worked < morning_slots and slot < evening_start:
-                        if LUNCH_START <= slot < LUNCH_END:
-                            slot += 1
-                            continue
-                        work[slot] = True
-                        if op_start <= slot < min(op_end, 48):
-                            ops[slot] = True
-                        slots_worked += 1
-                        slot += 1
-                
                 # Iltavuoro
                 for i in range(evening_start, evening_end):
                     work[i] = True
                     if op_start <= i < min(op_end, 48):
                         ops[i] = True
+
+                if sum(work) < TARGET_SLOTS:
+                    # Jaettu vuoro: aamu + ilta
+                    slot = NORMAL_START
+                    while sum(work) < TARGET_SLOTS and slot < evening_start:
+                        if LUNCH_START <= slot < LUNCH_END:
+                            slot += 1
+                            continue
+                        if not work[slot]:
+                            work[slot] = True
+                            if op_start <= slot < min(op_end, 48):
+                                ops[slot] = True
+                        slot += 1
                 
             elif dayman == 'Dayman PH2' and starts_night:
                 # PH2 lepää yötä varten - lyhyempi päivä
                 notes.append('Lepää yövuoroa varten')
                 
                 slot = NORMAL_START
-                slots_worked = 0
+                slots_worked = sum(work)
                 # Lyhyempi päivä: max 8h jotta riittää lepo
                 max_slots = 16  # 8h
                 while slots_worked < max_slots and slot < NORMAL_END:
@@ -477,7 +470,7 @@ def generate_schedule(days_data):
                     start_slot = NORMAL_START
                 
                 slot = start_slot
-                slots_worked = 0
+                slots_worked = sum(work)
                 while slots_worked < TARGET_SLOTS and slot < 48:
                     if LUNCH_START <= slot < LUNCH_END:
                         slot += 1
