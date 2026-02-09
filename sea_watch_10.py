@@ -332,11 +332,12 @@ def generate_schedule(days_data):
             notes = []
 
             def apply_arrival_departure():
-                if arrival_start is not None:
+                op_window_end = min(op_end, 48)
+                if arrival_start is not None and arrival_start < op_window_end and arrival_end > op_start:
                     for i in range(arrival_start, min(arrival_end, 48)):
                         work[i] = True
                         arr[i] = True
-                if departure_start is not None:
+                if departure_start is not None and departure_start < op_window_end and departure_end > op_start:
                     for i in range(departure_start, min(departure_end, 48)):
                         work[i] = True
                         dep[i] = True
@@ -362,6 +363,12 @@ def generate_schedule(days_data):
                         work[slot] = True
                         if slot < min(op_end, 48):
                             ops[slot] = True
+                    if op_end > NORMAL_END:
+                        notes.append('Myöhäinen aloitus, kattaa operaation lopun')
+                        late_start = max(NORMAL_END, min(op_end, 48) - 2)
+                        for slot in range(late_start, min(op_end, 48)):
+                            work[slot] = True
+                            ops[slot] = True
                 else:
                     notes.append(f"Yövuoro {index_to_time_str(night_split_slot)}-08")
                     for slot in range(night_split_slot, min(NORMAL_START, 48)):
@@ -381,8 +388,13 @@ def generate_schedule(days_data):
                     start_slot = NORMAL_START + 12  # 14:00
                     notes.append('Lepo iltavuoron jälkeen')
                 else:
-                    # EU aloittaa normaalisti
-                    start_slot = NORMAL_START
+                    # EU aloittaa normaalisti (tai myöhemmin, jos päivän lopussa on lisäoperaatiota)
+                    if dayman == 'Dayman EU' and op_end > NORMAL_END:
+                        shift_slots = min(op_end, 48) - NORMAL_END
+                        start_slot = NORMAL_START + shift_slots
+                        notes.append('Siirretty aloitus kattamaan päivän loppu')
+                    else:
+                        start_slot = NORMAL_START
                 
                 slot = start_slot
                 slots_worked = sum(work)
