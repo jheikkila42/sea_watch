@@ -211,6 +211,38 @@ def generate_schedule(days_data):
             analysis = analyze_stcw_from_work_starts(combined)
             if analysis['status'] == 'OK':
                 work[slot] = True
+
+    def add_slots(start, end, target, marker=None):
+        """Lisää slotit [start, end) työksi (ja halutessa marker-listaan)."""
+        if start is None or end is None:
+            return
+        for slot in range(max(0, start), min(end, 48)):
+            target[slot] = True
+            if marker is not None:
+                marker[slot] = True
+
+    def fill_remaining_hours(work, ops, target_slots):
+        """Täyttää puuttuvat tunnit: ensin 08-17, sitten operaatio, lopuksi muu."""
+        if sum(work) >= target_slots:
+            return
+
+        preferred = [
+            slot for slot in range(NORMAL_START, min(NORMAL_END, 48))
+            if slot < LUNCH_START or slot >= LUNCH_END
+        ]
+        op_window = [slot for slot in range(max(0, op_start), min(op_end, 48))]
+        fallback = [slot for slot in range(48)]
+
+        for slot in preferred + op_window + fallback:
+            if sum(work) >= target_slots:
+                break
+            if LUNCH_START <= slot < LUNCH_END:
+                continue
+            if work[slot]:
+                continue
+            work[slot] = True
+            if op_start <= slot < min(op_end, 48):
+                ops[slot] = True
     
     # ========================================
     # VAIHE 2: Laske vuorot päivä kerrallaan
@@ -287,30 +319,22 @@ def generate_schedule(days_data):
         bosun_dep = [False] * 48
         bosun_ops = [False] * 48
         
-        # Normaali päivävuoro
-        slot = NORMAL_START
-        slots_worked = 0
-        while slots_worked < TARGET_SLOTS and slot < 48:
-            if LUNCH_START <= slot < LUNCH_END:
-                slot += 1
-                continue
-            bosun_work[slot] = True
-            if op_start <= slot < min(op_end, 48):
-                bosun_ops[slot] = True
-            slots_worked += 1
-            slot += 1
-        
-        # Tulo
-        if arrival_start is not None:
-            for i in range(arrival_start, min(arrival_end, 48)):
-                bosun_work[i] = True
-                bosun_arr[i] = True
-        
-        # Lähtö
-        if departure_start is not None:
-            for i in range(departure_start, min(departure_end, 48)):
-                bosun_work[i] = True
-                bosun_dep[i] = True
+        # Vaihe 1 (pakolliset): cargo-operaatio + tulo + lähtö
+        add_slots(op_start, op_end, bosun_work, bosun_ops)
+        add_slots(arrival_start, arrival_end, bosun_work, bosun_arr)
+        add_slots(departure_start, departure_end, bosun_work, bosun_dep)
+
+        # Bosun pidetään yhtenäisenä vuorona pakollisen työn yli,
+        # jotta lepo ei pirstaloidu useaan >1h osaan.
+        mandatory_slots = [idx for idx, value in enumerate(bosun_work) if value]
+        if mandatory_slots:
+            start_slot = mandatory_slots[0]
+            end_slot = mandatory_slots[-1] + 1
+            add_slots(start_slot, end_slot, bosun_work)
+            add_slots(max(start_slot, op_start), min(end_slot, op_end, 48), bosun_ops)
+
+        # Vaihe 2 (täyttö): pyri 8.5h ja 08-17-ikkunaan
+        fill_remaining_hours(bosun_work, bosun_ops, TARGET_SLOTS)
         
         all_days['Bosun'].append({
             'work_slots': bosun_work,
@@ -332,19 +356,15 @@ def generate_schedule(days_data):
             notes = []
 
             def apply_arrival_departure():
-                op_window_end = min(op_end, 48)
-                if arrival_start is not None and arrival_start < op_window_end and arrival_end > op_start:
-                    for i in range(arrival_start, min(arrival_end, 48)):
-                        work[i] = True
-                        arr[i] = True
-                if departure_start is not None and departure_start < op_window_end and departure_end > op_start:
-                    for i in range(departure_start, min(departure_end, 48)):
-                        work[i] = True
-                        dep[i] = True
+                # Tulo/lähtö ovat aina pakollisia daymaneille riippumatta op-ikkunasta.
+                add_slots(arrival_start, arrival_end, work, arr)
+                add_slots(departure_start, departure_end, work, dep)
 
             def finalize_dayman_day():
                 prev_work = all_days[dayman][d - 1]['work_slots'] if d > 0 else [False] * 48
                 ensure_min_dayman_hours(work, prev_work, time_to_index(8, 0))
+                # Lopuksi täydennä 8.5h tavoitteeseen päiväpainotteisesti.
+                fill_remaining_hours(work, ops, TARGET_SLOTS)
                 all_days[dayman].append({
                     'work_slots': work,
                     'arrival_slots': arr,
