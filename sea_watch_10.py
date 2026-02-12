@@ -505,6 +505,18 @@ def generate_schedule(days_data):
             dp = [{w: NEG_INF for w in states} for _ in range(n)]
             parent = [{w: None for w in states} for _ in range(n)]
 
+            def rest_slots_before(worker, slot):
+                """Laskee peräkkäiset lepo-slotit ennen annettua slottia."""
+                if slot <= 0:
+                    return 0
+                slots = dayman_data[worker]['work']
+                rest = 0
+                i = slot - 1
+                while i >= 0 and not slots[i]:
+                    rest += 1
+                    i -= 1
+                return rest
+
             def slot_score(worker, slot):
                 if not stcw_allows_slot(worker, slot):
                     return NEG_INF
@@ -515,25 +527,35 @@ def generate_schedule(days_data):
                 if NORMAL_START <= slot < NORMAL_END:
                     score += 30
                 else:
-                    score -= 20
+                    score -= 30
 
-                # Jos worker on jo lukitusti töissä slotissa, suositaan samaa.
+                # Jos worker on jo valmiiksi töissä slotissa, suositaan samaa.
                 if dayman_data[worker]['work'][slot]:
                     score += 35
+
+                # Lepojatkumon painotus: pitkä lepo tärkeämpi kuin 08-17 bonus.
+                rest_before = rest_slots_before(worker, slot)
+                if 0 < rest_before < 6:          # alle 3h lepo ennen uutta pätkää
+                    score -= 180
+                elif rest_before >= 12:          # vähintään 6h lepo
+                    score += 80
+                elif rest_before >= 8:           # vähintään 4h lepo
+                    score += 45
 
                 # Vältä pirstaloitumista.
                 segs = segment_count_with_slot(worker, slot)
                 if segs > 2:
                     score -= 120
 
-                # Vältä yöllä turhaa päällekkäisyyttä.
+                # Vältä yöllä turhaa päällekkäisyyttä: iso lisämiinus,
+                # jos joku toinen dayman on jo samassa slotissa töissä.
                 if slot < NORMAL_START or slot >= NORMAL_END:
                     others = any(
                         dayman_data[o]['work'][slot]
                         for o in states if o != worker
                     )
                     if others:
-                        score -= 20
+                        score -= 220
 
                 return score
 
