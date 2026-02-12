@@ -372,6 +372,30 @@ def generate_schedule(days_data):
                     work[slot] = True
                     ops[slot] = True
 
+            # ---- JATKUVAN YÖN KÄSITTELY ----
+            if continues_from_night and dayman in (early_worker, late_worker) and night_split_slot is not None:
+                if dayman == early_worker:
+                    notes.append(f"Yövuoro 00-{index_to_time_str(night_split_slot)}")
+                    for slot in range(0, min(night_split_slot, 48)):
+                        work[slot] = True
+                        if op_start <= slot < min(op_end, 48):
+                            ops[slot] = True
+                else:
+                    notes.append(f"Yövuoro {index_to_time_str(night_split_slot)}-08")
+                    for slot in range(night_split_slot, min(NORMAL_START, 48)):
+                        work[slot] = True
+                        if op_start <= slot < min(op_end, 48):
+                            ops[slot] = True
+
+            # Yön aloituspäivä: PH1 jatkaa iltaan/yöhön, jotta jatkuvuus säilyy.
+            if starts_night and dayman == 'Dayman PH1':
+                notes.append('Yön aloitus, iltajatko')
+                evening_start = max(NORMAL_END, op_start)
+                for slot in range(evening_start, 48):
+                    work[slot] = True
+                    if op_start <= slot < min(op_end, 48):
+                        ops[slot] = True
+
             # Vaihe 2: täydennä tunnit (~8.5h), painota 08-17.
             prev_work = all_days[dayman][d - 1]['work_slots'] if d > 0 else [False] * 48
             ensure_min_dayman_hours(work, prev_work, time_to_index(8, 0))
