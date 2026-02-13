@@ -57,3 +57,16 @@ Käy läpi tämä järjestyksessä:
 - Streamlit ajaa `main`-haaraa.
 - Jos `main` näyttää vanhaa käytöstä, uudet commitit eivät ole vielä oikeasti
   mergetty `main`:iin (tai compare-haara on väärä/identtinen `main`:in kanssa).
+
+## Jos haluat saman muutoksen uudella PR:llä (eri nimellä)
+
+Jos GitHub näyttää, että vanhassa compare-haarassa ei ole eroja, tee uusi haara
+ja uusi commit (vaikka pieni dokumentointimuutos), jotta PR:ään syntyy diff:
+
+1. Luo uusi haara, esim. `codex/scheduling-refresh-2`.
+2. Tee haluttu muutos (tai pieni lisäys dokumentaatioon).
+3. Pushaa uusi haara GitHubiin.
+4. Avaa PR: **base = `main`**, **compare = `codex/scheduling-refresh-2`**.
+5. Tarkista että PR:n `Files changed` ei ole tyhjä.
+
+Näin saat varmasti uuden PR:n, vaikka aiempi haara olisi jo identtinen `main`:in kanssa.
