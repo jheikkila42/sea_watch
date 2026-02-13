@@ -129,7 +129,7 @@ def style_schedule_table(df):
 # SOVELLUS
 # -------------------------------------------------------------------
 def main():
-    st.set_page_config(page_title="Sea Watch - Työvuorogeneraattori", layout="wide")
+    st.set_page_config(page_title="Sea Watch - Testivuorogeneraattori", layout="wide")
 
     st.title("🛳️ Sea Watch - Työvuorolistageneraattori")
     st.write("Syötä päivien tulo-/lähtöajat ja satamaoperaatiot, niin sovellus "
@@ -217,3 +217,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
