@@ -473,7 +473,9 @@ def generate_schedule(days_data):
                 'locked': locked
             }
 
-        # Cargo-ops slottien omistaja: lohkoja suosiva dynaaminen optimointi.
+        # Cargo-ops jako kolmessa vaiheessa:
+        # 1) off-hours ensin 4h blokeissa, 2) loput cargo-slotit pisteytyksellä,
+        # 3) muu tuntitäyttö tehdään dayman-kohtaisessa viimeistelyssä.
         cargo_owner_per_slot = {}
 
         def stcw_allows_slot(dayman, slot):
@@ -483,209 +485,119 @@ def generate_schedule(days_data):
             combined = prev_work + trial
             return analyze_stcw_from_work_starts(combined)['status'] == 'OK'
 
-        def segment_count_with_slot(dayman, slot):
-            trial = dayman_data[dayman]['work'][:]
-            trial[slot] = True
-            segments = 0
-            in_seg = False
-            for v in trial:
-                if v and not in_seg:
-                    segments += 1
-                    in_seg = True
-                elif not v and in_seg:
-                    in_seg = False
-            return segments
+        def rest_slots_before(worker, slot):
+            if slot <= 0:
+                return 0
+            slots = dayman_data[worker]['work']
+            rest = 0
+            i = slot - 1
+            while i >= 0 and not slots[i]:
+                rest += 1
+                i -= 1
+            return rest
+
+        def owner_total_slots(worker):
+            return sum(dayman_data[worker]['work'])
+
+        def assign_slot(worker, slot):
+            cargo_owner_per_slot[slot] = worker
+            dayman_data[worker]['work'][slot] = True
+            dayman_data[worker]['ops'][slot] = True
+            dayman_data[worker]['locked'][slot] = True
+
+        def slot_score(worker, slot):
+            if not stcw_allows_slot(worker, slot):
+                return -10**9
+
+            score = 100
+
+            if NORMAL_START <= slot < NORMAL_END:
+                score += 35
+            else:
+                score -= 35
+
+            if dayman_data[worker]['work'][slot]:
+                score += 40
+
+            # Lepo painaa enemmän kuin 08-17 bonus.
+            rest_before = rest_slots_before(worker, slot)
+            if 0 < rest_before < 6:
+                score -= 180
+            elif rest_before >= 12:
+                score += 90
+            elif rest_before >= 8:
+                score += 50
+
+            # Off-hours: vältä päällekkäisyys erittäin vahvasti.
+            if slot < NORMAL_START or slot >= NORMAL_END:
+                others = any(dayman_data[o]['work'][slot] for o in daymen if o != worker)
+                if others:
+                    score -= 260
+
+            # Kevyt kuormatasoitus
+            score -= owner_total_slots(worker) * 2
+            return score
 
         if op_slots_today:
-            NEG_INF = -10**9
-            n = len(op_slots_today)
-            states = daymen[:]
+            off_hours_slots = [s for s in op_slots_today if s < NORMAL_START or s >= NORMAL_END]
+            day_hours_slots = [s for s in op_slots_today if NORMAL_START <= s < NORMAL_END]
 
-            # dp[i][w]: paras pistemäärä slotteihin [0..i], kun slot i annetaan workerille w.
-            dp = [{w: NEG_INF for w in states} for _ in range(n)]
-            parent = [{w: None for w in states} for _ in range(n)]
+            # Vaihe A: off-hours 4h blokeissa (8 slottia)
+            block_size = 8
+            for block_start in range(0, len(off_hours_slots), block_size):
+                block = off_hours_slots[block_start:block_start + block_size]
+                if not block:
+                    continue
 
-            def rest_slots_before(worker, slot):
-                """Laskee peräkkäiset lepo-slotit ennen annettua slottia."""
-                if slot <= 0:
-                    return 0
-                slots = dayman_data[worker]['work']
-                rest = 0
-                i = slot - 1
-                while i >= 0 and not slots[i]:
-                    rest += 1
-                    i -= 1
-                return rest
+                best_worker = None
+                best_score = None
+                for w in daymen:
+                    # arvioi koko blokki samalle workerille
+                    block_score = 0
+                    feasible = True
+                    for slot in block:
+                        s = slot_score(w, slot)
+                        if s <= -10**8:
+                            feasible = False
+                            break
+                        block_score += s
+                    # jatkuvuusbonus jos blokki jatkaa samaa workeria
+                    prev_slot = block[0] - 1
+                    if cargo_owner_per_slot.get(prev_slot) == w:
+                        block_score += 80
 
-            def slot_score(worker, slot):
-                if not stcw_allows_slot(worker, slot):
-                    return NEG_INF
-
-                score = 100
-
-                # Päiväikkuna on ensisijainen.
-                if NORMAL_START <= slot < NORMAL_END:
-                    score += 30
-                else:
-                    score -= 30
-
-                # Jos worker on jo valmiiksi töissä slotissa, suositaan samaa.
-                if dayman_data[worker]['work'][slot]:
-                    score += 35
-
-                # Lepojatkumon painotus: pitkä lepo tärkeämpi kuin 08-17 bonus.
-                rest_before = rest_slots_before(worker, slot)
-                if 0 < rest_before < 6:          # alle 3h lepo ennen uutta pätkää
-                    score -= 180
-                elif rest_before >= 12:          # vähintään 6h lepo
-                    score += 80
-                elif rest_before >= 8:           # vähintään 4h lepo
-                    score += 45
-
-                # Vältä pirstaloitumista.
-                segs = segment_count_with_slot(worker, slot)
-                if segs > 2:
-                    score -= 120
-
-                # Vältä yöllä turhaa päällekkäisyyttä: iso lisämiinus,
-                # jos joku toinen dayman on jo samassa slotissa töissä.
-                if slot < NORMAL_START or slot >= NORMAL_END:
-                    others = any(
-                        dayman_data[o]['work'][slot]
-                        for o in states if o != worker
-                    )
-                    if others:
-                        score -= 220
-
-                return score
-
-            # alustus
-            first_slot = op_slots_today[0]
-            for w in states:
-                dp[0][w] = slot_score(w, first_slot)
-
-            # siirtymät
-            for i in range(1, n):
-                slot = op_slots_today[i]
-                for w in states:
-                    s = slot_score(w, slot)
-                    if s <= NEG_INF:
+                    if not feasible:
                         continue
+                    if best_score is None or block_score > best_score:
+                        best_score = block_score
+                        best_worker = w
 
-                    best_prev = None
-                    best_val = NEG_INF
-                    for pw in states:
-                        if dp[i - 1][pw] <= NEG_INF:
-                            continue
+                if best_worker is None:
+                    # fallback vähiten kuormitetulle
+                    best_worker = min(daymen, key=owner_total_slots)
 
-                        # Vaihdosta rangaistus, jatkuvuudesta bonus
-                        transition = 25 if pw == w else -45
-                        candidate = dp[i - 1][pw] + transition + s
-                        if candidate > best_val:
-                            best_val = candidate
-                            best_prev = pw
+                for slot in block:
+                    assign_slot(best_worker, slot)
 
-                    dp[i][w] = best_val
-                    parent[i][w] = best_prev
+            # Vaihe B: loput cargo-slotit pisteytyksellä (slot-by-slot)
+            for slot in day_hours_slots:
+                if slot in cargo_owner_per_slot:
+                    continue
+                best_worker = None
+                best_score = None
+                for w in daymen:
+                    s = slot_score(w, slot)
+                    if cargo_owner_per_slot.get(slot - 1) == w:
+                        s += 35
+                    if best_score is None or s > best_score:
+                        best_score = s
+                        best_worker = w
 
-            # rekonstruktio
-            last_worker = max(states, key=lambda w: dp[n - 1][w])
-            if dp[n - 1][last_worker] <= NEG_INF:
-                owners = [states[0]] * n
-            else:
-                owners = [None] * n
-                owners[n - 1] = last_worker
-                for i in range(n - 1, 0, -1):
-                    prev = parent[i][owners[i]]
-                    if prev is None:
-                        prev = max(states, key=lambda w: dp[i - 1][w])
-                        if dp[i - 1][prev] <= NEG_INF:
-                            feasible = [w for w in states if stcw_allows_slot(w, op_slots_today[i - 1])]
-                            prev = feasible[0] if feasible else states[0]
-                    owners[i - 1] = prev
+                if best_worker is None or best_score <= -10**8:
+                    feasible = [w for w in daymen if stcw_allows_slot(w, slot)]
+                    best_worker = feasible[0] if feasible else daymen[0]
 
-            # fallback, jos jokin jäi None
-            for i, owner in enumerate(owners):
-                if owner is None:
-                    slot = op_slots_today[i]
-                    feasible = [w for w in states if stcw_allows_slot(w, slot)]
-                    owners[i] = feasible[0] if feasible else states[0]
-
-            # Tasoita kuormaa kevyesti rajasiirroilla lohkojen reunoissa.
-            counts = {w: 0 for w in states}
-            for o in owners:
-                counts[o] += 1
-
-            def try_reassign_boundary(i):
-                slot = op_slots_today[i]
-                current = owners[i]
-                left = owners[i - 1] if i > 0 else None
-                right = owners[i + 1] if i < n - 1 else None
-                candidates = [c for c in (left, right) if c and c != current]
-                if not candidates:
-                    return False
-                target = min(candidates, key=lambda w: counts[w])
-                if counts[current] - counts[target] < 3:
-                    return False
-                if not stcw_allows_slot(target, slot):
-                    return False
-                owners[i] = target
-                counts[current] -= 1
-                counts[target] += 1
-                return True
-
-            for i in range(n):
-                if 0 < i < n - 1 and owners[i - 1] != owners[i] != owners[i + 1]:
-                    try_reassign_boundary(i)
-
-            # Tuntikatto: siirrä cargo-slotteja pois ylikuormitetuilta daymaneilta.
-            base_hours = {w: sum(dayman_data[w]['work']) for w in states}
-
-            def owner_total_slots(worker):
-                return base_hours[worker] + sum(1 for o in owners if o == worker)
-
-            def boundary_priority(i):
-                left_same = i > 0 and owners[i - 1] == owners[i]
-                right_same = i < n - 1 and owners[i + 1] == owners[i]
-                # yritä ensin reuna/katkaisukohtia
-                return 0 if (left_same != right_same) else 1
-
-            changed = True
-            while changed:
-                changed = False
-                overloaded = [w for w in states if owner_total_slots(w) > MAX_SLOTS]
-                if not overloaded:
-                    break
-
-                ow = max(overloaded, key=lambda w: owner_total_slots(w))
-                candidate_idx = [i for i, o in enumerate(owners) if o == ow]
-                candidate_idx.sort(key=boundary_priority)
-
-                moved = False
-                for i in candidate_idx:
-                    slot = op_slots_today[i]
-                    for nw in sorted(states, key=lambda w: owner_total_slots(w)):
-                        if nw == ow:
-                            continue
-                        if owner_total_slots(nw) >= MAX_SLOTS:
-                            continue
-                        if not stcw_allows_slot(nw, slot):
-                            continue
-                        owners[i] = nw
-                        moved = True
-                        changed = True
-                        break
-                    if moved:
-                        break
-
-                if not moved:
-                    break
-
-            for slot, owner in zip(op_slots_today, owners):
-                cargo_owner_per_slot[slot] = owner
-                dayman_data[owner]['work'][slot] = True
-                dayman_data[owner]['ops'][slot] = True
-                dayman_data[owner]['locked'][slot] = True
+                assign_slot(best_worker, slot)
 
         for dayman in daymen:
             work = dayman_data[dayman]['work']
