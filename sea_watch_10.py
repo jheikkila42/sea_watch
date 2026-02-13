@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 STCW-yhteensopiva työvuorogeneraattori
-Versio: Uudelleenkirjoitettu jatkuvan operaation tuella
+Versio: Uudelleenkirjoitettu jatkuvan operaation tuella aa
 """
 
 from openpyxl import Workbook
