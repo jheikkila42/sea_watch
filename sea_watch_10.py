@@ -97,6 +97,14 @@ def check_stcw_at_slot(all_work_slots, slot_index):
     }
 
 
+
+
+def analyze_stcw_from_work_starts(all_work_slots):
+    """Yhteensopivuusapu: analysoi STCW annetusta työslottilistasta."""
+    if not all_work_slots:
+        return check_stcw_at_slot([], 0)
+    return check_stcw_at_slot(all_work_slots, len(all_work_slots) - 1)
+
 def would_cause_stcw_violation(slot, current_work, prev_day_work):
     test_work = current_work[:]
     test_work[slot] = True
@@ -616,3 +624,103 @@ if __name__ == "__main__":
             if ana['issues']:
                 for issue in ana['issues']:
                     print(f"    -> {issue}")
+
+
+def build_workbook_and_report(all_days, num_days, workers):
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
+    for d in range(num_days):
+        ws = wb.create_sheet(title=f"Päivä {d+1}")
+
+        ws.cell(row=1, column=1, value="Nimi")
+        for col in range(48):
+            h = col // 2
+            m = "00" if col % 2 == 0 else "30"
+            ws.cell(row=1, column=col + 2, value=f"{h:02d}:{m}")
+            ws.cell(row=1, column=col + 2).alignment = Alignment(textRotation=90)
+        ws.cell(row=1, column=50, value="Tunnit")
+
+        row = 2
+        for w in workers:
+            ws.cell(row=row, column=1, value=w)
+
+            data = all_days[w][d]
+            work = data['work_slots']
+            arr = data['arrival_slots']
+            dep = data['departure_slots']
+            ops = data['port_op_slots']
+
+            hours = sum(work) / 2
+
+            for col in range(48):
+                cell = ws.cell(row=row, column=col + 2)
+                cell.border = thin_border
+
+                if work[col]:
+                    if arr[col]:
+                        cell.fill = GREEN
+                        cell.value = "T"
+                    elif dep[col]:
+                        cell.fill = BLUE
+                        cell.value = "L"
+                    elif ops[col]:
+                        cell.fill = YELLOW
+                        cell.value = "S"
+                    else:
+                        cell.fill = ORANGE
+                        cell.value = "X"
+                else:
+                    cell.fill = WHITE
+
+            ws.cell(row=row, column=50, value=hours)
+            row += 1
+
+        ws.column_dimensions['A'].width = 15
+        for col in range(2, 50):
+            ws.column_dimensions[get_column_letter(col)].width = 3
+
+    report = []
+    for w in workers:
+        if len(all_days[w]) >= 2:
+            work1 = all_days[w][0]['work_slots']
+            work2 = all_days[w][1]['work_slots']
+            combined = work1 + work2
+            result = check_stcw_at_slot(combined, 95)
+            report.append({'worker': w, 'analysis': result})
+
+    return wb, report
+
+
+def generate_schedule_with_manual_day1(days_data, manual_day1_work):
+    """
+    Generoi vuorot normaalisti, mutta korvaa päivän 1 työslotit manuaalisella taulukolla.
+    manual_day1_work: dict {worker_name: [48 x bool]}
+    """
+    wb, all_days, _ = generate_schedule(days_data)
+
+    workers = ['Bosun', 'Dayman EU', 'Dayman PH1', 'Dayman PH2',
+               'Watchman 1', 'Watchman 2', 'Watchman 3']
+
+    for worker in workers:
+        if worker not in all_days or not all_days[worker]:
+            continue
+        slots = manual_day1_work.get(worker, [False] * 48)
+        slots = list(slots)[:48]
+        if len(slots) < 48:
+            slots.extend([False] * (48 - len(slots)))
+
+        all_days[worker][0]['work_slots'] = [bool(x) for x in slots]
+        all_days[worker][0]['arrival_slots'] = [False] * 48
+        all_days[worker][0]['departure_slots'] = [False] * 48
+        all_days[worker][0]['port_op_slots'] = [False] * 48
+
+    wb, report = build_workbook_and_report(all_days, len(days_data), workers)
+    return wb, all_days, report
