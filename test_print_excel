@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Yksinkertainen testiskripti työvuorogeneraattorille.
+Muokkaa DAYS_DATA listaa ja aja: python test_schedule.py
+"""
+
+from sea_watch_12 import generate_schedule, get_work_ranges, check_stcw_at_slot
+
+# ============================================================================
+# MUOKKAA TÄTÄ - Päivien tiedot
+# ============================================================================
+
+DAYS_DATA = [
+    # Päivä 1
+    {
+        'arrival_hour': 18,           # Tulo klo (None jos ei tuloa)
+        'arrival_minute': 0,
+        'departure_hour': None,       # Lähtö klo (None jos ei lähtöä)
+        'departure_minute': 0,
+        'port_op_start_hour': 19,     # Satamaoperaatio alkaa
+        'port_op_start_minute': 0,
+        'port_op_end_hour': 0,        # Satamaoperaatio loppuu (0 = keskiyö)
+        'port_op_end_minute': 0
+    },
+    # Päivä 2
+    {
+        'arrival_hour': None,
+        'arrival_minute': 0,
+        'departure_hour': 20,
+        'departure_minute': 0,
+        'port_op_start_hour': 0,
+        'port_op_start_minute': 0,
+        'port_op_end_hour': 19,
+        'port_op_end_minute': 0
+    },
+    # Lisää päiviä tarvittaessa:
+    # {
+    #     'arrival_hour': None,
+    #     ...
+    # },
+]
+
+# ============================================================================
+# ÄLÄÄ MUOKKAA TÄSTÄ ALASPÄIN
+# ============================================================================
+
+def main():
+    print("=" * 60)
+    print("TYÖVUOROGENERAATTORI - TESTI")
+    print("=" * 60)
+    
+    # Generoi aikataulu
+    wb, all_days, report = generate_schedule(DAYS_DATA)
+    
+    # Tulosta tulokset
+    for d in range(len(DAYS_DATA)):
+        print(f"\n=== Päivä {d+1} ===")
+        
+        info = DAYS_DATA[d]
+        arr = f"{info['arrival_hour']:02d}:{info['arrival_minute']:02d}" if info['arrival_hour'] is not None else "-"
+        dep = f"{info['departure_hour']:02d}:{info['departure_minute']:02d}" if info['departure_hour'] is not None else "-"
+        op_start = f"{info['port_op_start_hour']:02d}:{info['port_op_start_minute']:02d}"
+        op_end = f"{info['port_op_end_hour']:02d}:{info['port_op_end_minute']:02d}"
+        print(f"  Tulo: {arr} | Lähtö: {dep} | Op: {op_start}-{op_end}")
+        print()
+        
+        for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
+            work = all_days[w][d]['work_slots']
+            ops = all_days[w][d]['port_op_slots']
+            hours = sum(work) / 2
+            op_hours = sum(ops) / 2
+            ranges = get_work_ranges(work)
+            print(f"  {w}: {hours}h (op: {op_hours}h) | {' + '.join(ranges)}")
+    
+    # STCW-raportti
+    print("\n" + "=" * 60)
+    print("STCW-TARKISTUS")
+    print("=" * 60)
+    
+    for r in report:
+        if 'Dayman' in r['worker']:
+            ana = r['analysis']
+            status = '✓' if ana['status'] == 'OK' else '⚠ RIKE'
+            print(f"\n{r['worker']}: {status}")
+            print(f"  Lepoa: {ana['total_rest']}h")
+            print(f"  Pisin lepojakso: {ana['longest_rest']}h")
+            print(f"  Lepojaksoja: {ana['rest_period_count']}")
+            if ana['issues']:
+                for issue in ana['issues']:
+                    print(f"  -> {issue}")
+    
+    # Tallenna Excel
+    excel_file = "tyovuorot.xlsx"
+    wb.save(excel_file)
+    print(f"\n" + "=" * 60)
+    print(f"Excel tallennettu: {excel_file}")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
