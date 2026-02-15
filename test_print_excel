@@ -2,14 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 Yksinkertainen testiskripti työvuorogeneraattorille.
-Muokkaa DAYS_DATA-listaa ja aja: python test_print_excel
+
 """
 
 from sea_watch_10 import generate_schedule, get_work_ranges
 
-# ============================================================================
-# MUOKKAA TÄTÄ - Päivien tiedot
-# ============================================================================
+
 
 DAYS_DATA = [
     # Päivä 1
@@ -41,9 +39,7 @@ DAYS_DATA = [
     # },
 ]
 
-# ============================================================================
-# ÄLÄÄ MUOKKAA TÄSTÄ ALASPÄIN
-# ============================================================================
+
 
 def main():
     print("=" * 60)
