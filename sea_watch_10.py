@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 STCW-yhteensopiva työvuorogeneraattori
-Versio 14: Käyttäjän määrittelemä pisteytys
+
 
 Pisteytys:
   +5000  Slotti 08-17 ulkopuolella, ei vielä työntekijää
@@ -127,7 +127,7 @@ def count_work_periods(work):
 
 
 # ============================================================================
-# PISTEYTYS - VAIN KÄYTTÄJÄN MÄÄRITTELEMÄT SÄÄNNÖT
+# PISTEYTYS 
 # ============================================================================
 
 def score_slot(slot, dayman, dayman_work, all_dayman_work, prev_day_work,
