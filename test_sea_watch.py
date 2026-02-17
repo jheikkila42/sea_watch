@@ -396,3 +396,72 @@ class TestRegressions:
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+class TestSpecialOperationsMandatory:
+    """Slussi ja shiftaus ovat pakollisia kuten tulo/lähtö."""
+
+    def test_sluice_arrival_at_17_is_forced_for_daymen(self):
+        days_data = [
+            {
+                'arrival_hour': None,
+                'arrival_minute': 0,
+                'departure_hour': None,
+                'departure_minute': 0,
+                'port_op_start_hour': 8,
+                'port_op_start_minute': 0,
+                'port_op_end_hour': 17,
+                'port_op_end_minute': 0,
+                'sluice_arrival_hour': 17,
+                'sluice_arrival_minute': 0,
+                'sluice_departure_hour': None,
+                'sluice_departure_minute': 0,
+                'shifting_hour': None,
+                'shifting_minute': 0,
+            }
+        ]
+
+        _, all_days, _ = generate_schedule(days_data)
+        daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+
+        # 17:00-18:00 => 2 daymania
+        for slot in [34, 35]:
+            working = sum(all_days[w][0]['work_slots'][slot] for w in daymen)
+            marked = sum(all_days[w][0]['sluice_slots'][slot] for w in daymen)
+            assert working == 2
+            assert marked == 2
+
+        # 18:00-19:00 => 3 daymania
+        for slot in [36, 37]:
+            working = sum(all_days[w][0]['work_slots'][slot] for w in daymen)
+            marked = sum(all_days[w][0]['sluice_slots'][slot] for w in daymen)
+            assert working == 3
+            assert marked == 3
+
+    def test_shifting_is_forced_for_all_daymen(self):
+        days_data = [
+            {
+                'arrival_hour': None,
+                'arrival_minute': 0,
+                'departure_hour': None,
+                'departure_minute': 0,
+                'port_op_start_hour': 8,
+                'port_op_start_minute': 0,
+                'port_op_end_hour': 17,
+                'port_op_end_minute': 0,
+                'sluice_arrival_hour': None,
+                'sluice_arrival_minute': 0,
+                'sluice_departure_hour': None,
+                'sluice_departure_minute': 0,
+                'shifting_hour': 17,
+                'shifting_minute': 0,
+            }
+        ]
+
+        _, all_days, _ = generate_schedule(days_data)
+        daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+
+        for slot in [34, 35]:
+            working = sum(all_days[w][0]['work_slots'][slot] for w in daymen)
+            marked = sum(all_days[w][0]['shifting_slots'][slot] for w in daymen)
+            assert working == 3
+            assert marked == 3
