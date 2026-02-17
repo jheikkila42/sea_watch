@@ -362,8 +362,10 @@ def generate_schedule(days_data):
         departure_h = info.get('departure_hour')
         departure_m = info.get('departure_minute', 0)
 
-        sluice_h = info.get('sluice_hour')
-        sluice_m = info.get('sluice_minute', 0)
+        sluice_arr_h = info.get('sluice_arrival_hour', info.get('sluice_hour'))
+        sluice_arr_m = info.get('sluice_arrival_minute', info.get('sluice_minute', 0))
+        sluice_dep_h = info.get('sluice_departure_hour')
+        sluice_dep_m = info.get('sluice_departure_minute', 0)
         shifting_h = info.get('shifting_hour')
         shifting_m = info.get('shifting_minute', 0)
         
@@ -388,7 +390,8 @@ def generate_schedule(days_data):
         departure_start = time_to_index(departure_h, departure_m) if departure_h is not None else None
         departure_end = departure_start + 2 if departure_start is not None else None
 
-        sluice_start = time_to_index(sluice_h, sluice_m) if sluice_h is not None else None
+        sluice_arrival_start = time_to_index(sluice_arr_h, sluice_arr_m) if sluice_arr_h is not None else None
+        sluice_departure_start = time_to_index(sluice_dep_h, sluice_dep_m) if sluice_dep_h is not None else None
         shifting_start = time_to_index(shifting_h, shifting_m) if shifting_h is not None else None
         
         # Edellisen päivän työvuorot
@@ -455,24 +458,23 @@ def generate_schedule(days_data):
             for dayman in sorted_daymen:
                 add_slots(departure_start, departure_end, all_dayman_work[dayman], all_dayman_dep[dayman])
 
-        # VAIHE 2.1: Slussi (2h): 1. tunti kaksi daymania, 2. tunti kaikki daymanit
-        sluice_first_hour_slots = set()
-        first_hour_daymen = []
-        if sluice_start is not None:
-            first_hour_slots = range(max(0, sluice_start), min(sluice_start + 2, 48))
-            second_hour_slots = range(max(0, sluice_start + 2), min(sluice_start + 4, 48))
-            sluice_first_hour_slots = set(first_hour_slots)
+        # VAIHE 2.1: Slussi - tulo (2h): 1. tunti kaksi daymania, 2. tunti kaikki daymanit
+        sluice_two_dayman_slots = {}
+        if sluice_arrival_start is not None:
+            first_hour_slots = range(max(0, sluice_arrival_start), min(sluice_arrival_start + 2, 48))
+            second_hour_slots = range(max(0, sluice_arrival_start + 2), min(sluice_arrival_start + 4, 48))
 
-            sluice_scores = {}
+            sluice_arr_scores = {}
             for dayman in daymen:
                 score = 0
-                if sluice_start > 0 and all_dayman_work[dayman][sluice_start - 1]:
+                if sluice_arrival_start > 0 and all_dayman_work[dayman][sluice_arrival_start - 1]:
                     score += 150
                 score += (10 - (sum(all_dayman_work[dayman]) / 2)) * 10
-                sluice_scores[dayman] = score
+                sluice_arr_scores[dayman] = score
 
-            first_hour_daymen = sorted(daymen, key=lambda dm: sluice_scores[dm], reverse=True)[:2]
+            first_hour_daymen = sorted(daymen, key=lambda dm: sluice_arr_scores[dm], reverse=True)[:2]
             for slot in first_hour_slots:
+                sluice_two_dayman_slots[slot] = set(first_hour_daymen)
                 for dayman in first_hour_daymen:
                     all_dayman_work[dayman][slot] = True
                     all_dayman_sluice[dayman][slot] = True
@@ -482,9 +484,28 @@ def generate_schedule(days_data):
                     all_dayman_work[dayman][slot] = True
                     all_dayman_sluice[dayman][slot] = True
 
-        # VAIHE 2.2: Shiftaus (2h): kaikki daymanit paikalla koko ajan
+        # VAIHE 2.2: Slussi - lähtö (2h): koko ajan kaksi daymania
+        if sluice_departure_start is not None:
+            departure_sluice_slots = range(max(0, sluice_departure_start), min(sluice_departure_start + 4, 48))
+
+            sluice_dep_scores = {}
+            for dayman in daymen:
+                score = 0
+                if sluice_departure_start > 0 and all_dayman_work[dayman][sluice_departure_start - 1]:
+                    score += 150
+                score += (10 - (sum(all_dayman_work[dayman]) / 2)) * 10
+                sluice_dep_scores[dayman] = score
+
+            departure_daymen = sorted(daymen, key=lambda dm: sluice_dep_scores[dm], reverse=True)[:2]
+            for slot in departure_sluice_slots:
+                sluice_two_dayman_slots[slot] = set(departure_daymen)
+                for dayman in departure_daymen:
+                    all_dayman_work[dayman][slot] = True
+                    all_dayman_sluice[dayman][slot] = True
+
+        # VAIHE 2.3: Shiftaus (1h): kaikki daymanit paikalla koko ajan
         if shifting_start is not None:
-            shifting_slots = range(max(0, shifting_start), min(shifting_start + 4, 48))
+            shifting_slots = range(max(0, shifting_start), min(shifting_start + 2, 48))
             for slot in shifting_slots:
                 for dayman in daymen:
                     all_dayman_work[dayman][slot] = True
@@ -516,7 +537,8 @@ def generate_schedule(days_data):
 
             scores = {}
             for dayman in daymen:
-                if slot in sluice_first_hour_slots and dayman not in first_hour_daymen:
+                forced_daymen = sluice_two_dayman_slots.get(slot)
+                if forced_daymen is not None and dayman not in forced_daymen:
                     scores[dayman] = -10000
                     continue
                 scores[dayman] = score_slot(
@@ -549,7 +571,8 @@ def generate_schedule(days_data):
                             for s in range(gap_start, gap_end):
                                 if LUNCH_START <= s < LUNCH_END:
                                     continue
-                                if s in sluice_first_hour_slots and dayman not in first_hour_daymen:
+                                forced_daymen = sluice_two_dayman_slots.get(s)
+                                if forced_daymen is not None and dayman not in forced_daymen:
                                     continue
                                 if violates_single_outside_worker_rule(dayman, s, all_dayman_work, daymen, op_start, op_end):
                                     continue
@@ -574,7 +597,8 @@ def generate_schedule(days_data):
                         continue
                     if LUNCH_START <= slot < LUNCH_END:
                         continue
-                    if slot in sluice_first_hour_slots and dayman not in first_hour_daymen:
+                    forced_daymen = sluice_two_dayman_slots.get(slot)
+                    if forced_daymen is not None and dayman not in forced_daymen:
                         continue
 
                     score = score_slot(
@@ -631,7 +655,8 @@ def generate_schedule(days_data):
                             for s in range(gap_start, gap_end):
                                 if LUNCH_START <= s < LUNCH_END:
                                     continue
-                                if s in sluice_first_hour_slots and dayman not in first_hour_daymen:
+                                forced_daymen = sluice_two_dayman_slots.get(s)
+                                if forced_daymen is not None and dayman not in forced_daymen:
                                     continue
                                 if violates_single_outside_worker_rule(dayman, s, all_dayman_work, daymen, op_start, op_end):
                                     continue

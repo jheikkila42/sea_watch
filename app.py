@@ -65,14 +65,19 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
                 )
 
             with col3:
-                sluice_h, sluice_m = parse_optional_time(
-                    "Slussi alku (HH:MM, kesto 2h)",
-                    key=f"{key_prefix}_sluice_{day}",
+                sluice_arr_h, sluice_arr_m = parse_optional_time(
+                    "Slussi - tulo alku (HH:MM, kesto 2h)",
+                    key=f"{key_prefix}_sluice_arr_{day}",
                 )
                 shifting_h, shifting_m = parse_optional_time(
-                    "Shiftaus alku (HH:MM, kesto 2h)",
+                    "Shiftaus alku (HH:MM, kesto 1h)",
                     key=f"{key_prefix}_shifting_{day}",
                 )
+
+            sluice_dep_h, sluice_dep_m = parse_optional_time(
+                "Slussi - lähtö alku (HH:MM, kesto 2h)",
+                key=f"{key_prefix}_sluice_dep_{day}",
+            )
 
             days.append(
                 {
@@ -84,8 +89,10 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
                     "port_op_start_minute": op_s_m or 0,
                     "port_op_end_hour": op_e_h,
                     "port_op_end_minute": op_e_m or 0,
-                    "sluice_hour": sluice_h,
-                    "sluice_minute": sluice_m or 0,
+                    "sluice_arrival_hour": sluice_arr_h,
+                    "sluice_arrival_minute": sluice_arr_m or 0,
+                    "sluice_departure_hour": sluice_dep_h,
+                    "sluice_departure_minute": sluice_dep_m or 0,
                     "shifting_hour": shifting_h,
                     "shifting_minute": shifting_m or 0,
                 }
@@ -253,8 +260,10 @@ def main():
                 "port_op_start_minute": 0,
                 "port_op_end_hour": 17,
                 "port_op_end_minute": 0,
-                "sluice_hour": None,
-                "sluice_minute": 0,
+                "sluice_arrival_hour": None,
+                "sluice_arrival_minute": 0,
+                "sluice_departure_hour": None,
+                "sluice_departure_minute": 0,
                 "shifting_hour": None,
                 "shifting_minute": 0,
             }
