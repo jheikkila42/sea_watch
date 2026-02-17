@@ -676,6 +676,10 @@ def generate_schedule(days_data):
         # Tallenna
         # Varmistus: erikoisoperaatioiden pakolliset läsnäolot pysyvät aina lopputuloksessa.
         for slot in first_hour_slots:
+            forced = set(first_hour_daymen)
+            for dayman in daymen:
+                if dayman not in forced:
+                    all_dayman_work[dayman][slot] = False
             for dayman in first_hour_daymen:
                 all_dayman_work[dayman][slot] = True
                 all_dayman_sluice[dayman][slot] = True
@@ -684,6 +688,10 @@ def generate_schedule(days_data):
                 all_dayman_work[dayman][slot] = True
                 all_dayman_sluice[dayman][slot] = True
         for slot in departure_sluice_slots:
+            forced = set(departure_daymen)
+            for dayman in daymen:
+                if dayman not in forced:
+                    all_dayman_work[dayman][slot] = False
             for dayman in departure_daymen:
                 all_dayman_work[dayman][slot] = True
                 all_dayman_sluice[dayman][slot] = True
