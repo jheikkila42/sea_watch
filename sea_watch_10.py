@@ -448,6 +448,23 @@ def generate_schedule(days_data):
                 op_slots.append(slot)
         
         for slot in op_slots:
+            # Jatkuvuussääntö: jos ollaan 08-17 ulkopuolella ja OP käynnissä,
+            # jatketaan samaa yövuorolaista kuin edellisessä slotissa aina kun mahdollista.
+            is_outside_normal = slot < NORMAL_START or slot >= NORMAL_END
+            if is_outside_normal and is_during_op_slot(slot, op_start, op_end) and slot > 0:
+                prev_workers = [dm for dm in daymen if all_dayman_work[dm][slot - 1]]
+                if len(prev_workers) == 1:
+                    carry_dm = prev_workers[0]
+                    carry_score = score_slot(
+                        slot, carry_dm, all_dayman_work[carry_dm], all_dayman_work,
+                        prev_day_work[carry_dm], daymen,
+                        arrival_start, arrival_end, departure_start, departure_end, op_start, op_end
+                    )
+                    if carry_score > -10000:
+                        all_dayman_work[carry_dm][slot] = True
+                        all_dayman_ops[carry_dm][slot] = True
+                        continue
+
             scores = {}
             for dayman in daymen:
                 scores[dayman] = score_slot(
