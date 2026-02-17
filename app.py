@@ -113,14 +113,14 @@ def create_schedule_table(all_days, day_idx, workers):
         shifting = day_data.get("shifting_slots", [False] * 48)
 
         for i, time_col in enumerate(TIME_COLS):
-            if arr[i]:
-                row[time_col] = "B"
-            elif dep[i]:
-                row[time_col] = "C"
-            elif sluice[i]:
+            if sluice[i]:
                 row[time_col] = "SL"
             elif shifting[i]:
                 row[time_col] = "SH"
+            elif arr[i]:
+                row[time_col] = "B"
+            elif dep[i]:
+                row[time_col] = "C"
             elif work[i]:
                 row[time_col] = "●"
             else:

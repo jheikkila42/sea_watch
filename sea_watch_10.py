@@ -460,9 +460,16 @@ def generate_schedule(days_data):
 
         # VAIHE 2.1: Slussi - tulo (2h): 1. tunti kaksi daymania, 2. tunti kaikki daymanit
         sluice_two_dayman_slots = {}
+        first_hour_slots = []
+        second_hour_slots = []
+        first_hour_daymen = []
+        departure_sluice_slots = []
+        departure_daymen = []
+        shifting_slots = []
+
         if sluice_arrival_start is not None:
-            first_hour_slots = range(max(0, sluice_arrival_start), min(sluice_arrival_start + 2, 48))
-            second_hour_slots = range(max(0, sluice_arrival_start + 2), min(sluice_arrival_start + 4, 48))
+            first_hour_slots = list(range(max(0, sluice_arrival_start), min(sluice_arrival_start + 2, 48)))
+            second_hour_slots = list(range(max(0, sluice_arrival_start + 2), min(sluice_arrival_start + 4, 48)))
 
             sluice_arr_scores = {}
             for dayman in daymen:
@@ -486,7 +493,7 @@ def generate_schedule(days_data):
 
         # VAIHE 2.2: Slussi - lähtö (2h): koko ajan kaksi daymania
         if sluice_departure_start is not None:
-            departure_sluice_slots = range(max(0, sluice_departure_start), min(sluice_departure_start + 4, 48))
+            departure_sluice_slots = list(range(max(0, sluice_departure_start), min(sluice_departure_start + 4, 48)))
 
             sluice_dep_scores = {}
             for dayman in daymen:
@@ -505,7 +512,7 @@ def generate_schedule(days_data):
 
         # VAIHE 2.3: Shiftaus (1h): kaikki daymanit paikalla koko ajan
         if shifting_start is not None:
-            shifting_slots = range(max(0, shifting_start), min(shifting_start + 2, 48))
+            shifting_slots = list(range(max(0, shifting_start), min(shifting_start + 2, 48)))
             for slot in shifting_slots:
                 for dayman in daymen:
                     all_dayman_work[dayman][slot] = True
@@ -667,6 +674,24 @@ def generate_schedule(days_data):
                     i += 1
         
         # Tallenna
+        # Varmistus: erikoisoperaatioiden pakolliset läsnäolot pysyvät aina lopputuloksessa.
+        for slot in first_hour_slots:
+            for dayman in first_hour_daymen:
+                all_dayman_work[dayman][slot] = True
+                all_dayman_sluice[dayman][slot] = True
+        for slot in second_hour_slots:
+            for dayman in daymen:
+                all_dayman_work[dayman][slot] = True
+                all_dayman_sluice[dayman][slot] = True
+        for slot in departure_sluice_slots:
+            for dayman in departure_daymen:
+                all_dayman_work[dayman][slot] = True
+                all_dayman_sluice[dayman][slot] = True
+        for slot in shifting_slots:
+            for dayman in daymen:
+                all_dayman_work[dayman][slot] = True
+                all_dayman_shifting[dayman][slot] = True
+
         for dayman in daymen:
             all_days[dayman].append({
                 'work_slots': all_dayman_work[dayman],
@@ -742,7 +767,13 @@ def generate_schedule(days_data):
                 cell.border = thin_border
                 
                 if work[col]:
-                    if arr[col]:
+                    if sluice[col]:
+                        cell.fill = PURPLE
+                        cell.value = "SL"
+                    elif shifting[col]:
+                        cell.fill = PINK
+                        cell.value = "SH"
+                    elif arr[col]:
                         cell.fill = GREEN
                         cell.value = "T"
                     elif dep[col]:
@@ -872,18 +903,18 @@ def build_workbook_and_report(all_days, num_days, workers):
                 cell.border = thin_border
 
                 if work[col]:
-                    if arr[col]:
-                        cell.fill = GREEN
-                        cell.value = "T"
-                    elif dep[col]:
-                        cell.fill = BLUE
-                        cell.value = "L"
-                    elif sluice[col]:
+                    if sluice[col]:
                         cell.fill = PURPLE
                         cell.value = "SL"
                     elif shifting[col]:
                         cell.fill = PINK
                         cell.value = "SH"
+                    elif arr[col]:
+                        cell.fill = GREEN
+                        cell.value = "T"
+                    elif dep[col]:
+                        cell.fill = BLUE
+                        cell.value = "L"
                     elif ops[col]:
                         cell.fill = YELLOW
                         cell.value = "S"
