@@ -97,6 +97,56 @@ def check_stcw_at_slot(all_work_slots, slot_index):
     }
 
 
+
+
+def analyze_stcw_from_work_starts(all_work_slots):
+    """Yhteensopivuusapu: analysoi viimeisen 24h STCW-tila.
+
+    Huomioi vuorokauden rajan yli jatkuvan lepojakson yhtenä jaksona
+    (ensimmäinen ja viimeinen lepojakso yhdistetään tarvittaessa).
+    """
+    window = list(all_work_slots[-48:])
+    if len(window) < 48:
+        window = [False] * (48 - len(window)) + window
+
+    rest_periods = []
+    current = 0
+    for is_work in window:
+        if not is_work:
+            current += 1
+        elif current > 0:
+            if current >= 2:
+                rest_periods.append(current / 2)
+            current = 0
+
+    if current > 0:
+        if current >= 2:
+            rest_periods.append(current / 2)
+
+    if rest_periods and not window[0] and not window[-1] and len(rest_periods) >= 2:
+        rest_periods[0] += rest_periods[-1]
+        rest_periods.pop()
+
+    total_rest = sum(rest_periods)
+    longest_rest = max(rest_periods) if rest_periods else 0
+    rest_period_count = len(rest_periods)
+
+    issues = []
+    if total_rest < 10:
+        issues.append(f"Lepoa vain {total_rest}h (min 10h)")
+    if rest_period_count > 2:
+        issues.append(f"Lepo {rest_period_count} osassa (max 2)")
+    if longest_rest < 6:
+        issues.append(f"Pisin lepo {longest_rest}h (min 6h)")
+
+    return {
+        'status': 'OK' if not issues else 'RIKE',
+        'issues': issues,
+        'total_rest': total_rest,
+        'longest_rest': longest_rest,
+        'rest_period_count': rest_period_count
+    }
+
 def would_cause_stcw_violation(slot, current_work, prev_day_work):
     test_work = current_work[:]
     test_work[slot] = True
@@ -116,6 +166,24 @@ def count_work_periods(work):
         elif not w:
             in_work = False
     return periods
+
+
+def is_during_op_slot(slot, op_start, op_end):
+    return op_start <= slot < min(op_end, 48)
+
+
+def violates_single_outside_worker_rule(dayman, slot, all_dayman_work, daymen, op_start, op_end):
+    """
+    Jos 08-17 ulkopuolella on satamaoperaatio käynnissä,
+    vain yksi dayman saa olla töissä per slotti.
+    """
+    is_outside_normal = slot < NORMAL_START or slot >= NORMAL_END
+    if not is_outside_normal:
+        return False
+    if not is_during_op_slot(slot, op_start, op_end):
+        return False
+
+    return any(other != dayman and all_dayman_work[other][slot] for other in daymen)
 
 
 # ============================================================================
@@ -147,7 +215,7 @@ def score_slot(slot, dayman, dayman_work, all_dayman_work, prev_day_work,
     # Kolmas työjakso - esto (STCW-rike)
     test_work = dayman_work[:]
     test_work[slot] = True
-    if count_work_periods(test_work) > 2:
+    if count_work_periods(test_work) > 3:
         return -10000
     
     # Aloita pistelasku
@@ -159,55 +227,29 @@ def score_slot(slot, dayman, dayman_work, all_dayman_work, prev_day_work,
         score -= 2000
     
     # Laske 08-17 ulkopuoliset tunnit (slotit)
-    outside_normal_slots = sum(1 for i in range(48) 
+    outside_normal_slots = sum(1 for i in range(48)
                                 if dayman_work[i] and (i < NORMAL_START or i >= NORMAL_END))
-    
+
     # Onko tämä slotti 08-17 ulkopuolella?
     is_outside_normal = slot < NORMAL_START or slot >= NORMAL_END
-    
+
     if is_outside_normal:
+        # Kova sääntö: kun satamaoperaatio käy 08-17 ulkopuolella,
+        # slotissa saa olla vain yksi dayman.
+        if violates_single_outside_worker_rule(dayman, slot, all_dayman_work, daymen, op_start, op_end):
+            return -10000
+
         # -5000: Jo 6h+ yö/iltatyötä
         if outside_normal_slots >= MAX_OUTSIDE_NORMAL_SLOTS:
             score -= 5000
-        
-        # Onko cargo op käynnissä?
-        is_during_op = op_start <= slot < min(op_end, 48)
-        
+
+        is_during_op = is_during_op_slot(slot, op_start, op_end)
         if not is_during_op:
             # -1000: 08-17 ulkopuolella mutta cargo op EI käynnissä
             score -= 1000
-        
-        # Onko joku muu jo töissä tässä slotissa?
-        someone_else_working = False
-        for other in daymen:
-            if other != dayman and all_dayman_work[other][slot]:
-                someone_else_working = True
-                break
-        if someone_else_working:
-            # -1000: 08-17 ulkopuolella ja joku muu jo töissä
-            score -= 1000
         else:
             # +5000: Slotti 08-17 ulkopuolella, ei vielä työntekijää, JA cargo op käynnissä
-            if is_during_op:
-                score += 5000
-        
-        # Onko joku muu jo töissä tässä slotissa?
-        someone_else_working = False
-        for other in daymen:
-            if other != dayman and all_dayman_work[other][slot]:
-                someone_else_working = True
-                break
-        if someone_else_working:
-            # -1000: 08-17 ulkopuolella ja joku muu jo töissä
-            score -= 1000
-        else:
-            # +5000: Slotti 08-17 ulkopuolella, ei vielä työntekijää, JA cargo op käynnissä
-            is_during_op = op_start <= slot < min(op_end, 48)
-            if is_during_op:
-                score += 5000
-        
-        
-       
+            score += 5000
     else:
         # +50: Slotti 08-17 välillä
         score += 50
@@ -364,7 +406,7 @@ def generate_schedule(days_data):
                 departure_scores[dayman] = score
             
             sorted_daymen = sorted(departure_scores.keys(), key=lambda x: departure_scores[x], reverse=True)
-            for dayman in sorted_daymen[:2]:
+            for dayman in sorted_daymen:
                 add_slots(departure_start, departure_end, all_dayman_work[dayman], all_dayman_dep[dayman])
         
         # VAIHE 3: Jaa OP-slotit pisteytyksellä
@@ -404,10 +446,13 @@ def generate_schedule(days_data):
                         gap_slots = gap_end - gap_start
                         if gap_slots <= 4 and gap_slots > 0:
                             for s in range(gap_start, gap_end):
-                                if not (LUNCH_START <= s < LUNCH_END):
-                                    all_dayman_work[dayman][s] = True
-                                    if op_start <= s < min(op_end, 48):
-                                        all_dayman_ops[dayman][s] = True
+                                if LUNCH_START <= s < LUNCH_END:
+                                    continue
+                                if violates_single_outside_worker_rule(dayman, s, all_dayman_work, daymen, op_start, op_end):
+                                    continue
+                                all_dayman_work[dayman][s] = True
+                                if op_start <= s < min(op_end, 48):
+                                    all_dayman_ops[dayman][s] = True
                 else:
                     i += 1
         
@@ -437,7 +482,7 @@ def generate_schedule(days_data):
                         best_score = score
                         best_slot = slot
                     
-                if best_slot is not None and best_score > 0:
+                if best_slot is not None:
                     all_dayman_work[dayman][best_slot] = True
                     if op_start <= best_slot < min(op_end, 48):
                         all_dayman_ops[dayman][best_slot] = True
@@ -462,10 +507,13 @@ def generate_schedule(days_data):
                         gap_slots = gap_end - gap_start
                         if gap_slots <= 4 and gap_slots > 0:
                             for s in range(gap_start, gap_end):
-                                if not (LUNCH_START <= s < LUNCH_END):
-                                    all_dayman_work[dayman][s] = True
-                                    if op_start <= s < min(op_end, 48):
-                                        all_dayman_ops[dayman][s] = True
+                                if LUNCH_START <= s < LUNCH_END:
+                                    continue
+                                if violates_single_outside_worker_rule(dayman, s, all_dayman_work, daymen, op_start, op_end):
+                                    continue
+                                all_dayman_work[dayman][s] = True
+                                if op_start <= s < min(op_end, 48):
+                                    all_dayman_ops[dayman][s] = True
                 else:
                     i += 1
         
@@ -616,3 +664,103 @@ if __name__ == "__main__":
             if ana['issues']:
                 for issue in ana['issues']:
                     print(f"    -> {issue}")
+
+
+def build_workbook_and_report(all_days, num_days, workers):
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
+    for d in range(num_days):
+        ws = wb.create_sheet(title=f"Päivä {d+1}")
+
+        ws.cell(row=1, column=1, value="Nimi")
+        for col in range(48):
+            h = col // 2
+            m = "00" if col % 2 == 0 else "30"
+            ws.cell(row=1, column=col + 2, value=f"{h:02d}:{m}")
+            ws.cell(row=1, column=col + 2).alignment = Alignment(textRotation=90)
+        ws.cell(row=1, column=50, value="Tunnit")
+
+        row = 2
+        for w in workers:
+            ws.cell(row=row, column=1, value=w)
+
+            data = all_days[w][d]
+            work = data['work_slots']
+            arr = data['arrival_slots']
+            dep = data['departure_slots']
+            ops = data['port_op_slots']
+
+            hours = sum(work) / 2
+
+            for col in range(48):
+                cell = ws.cell(row=row, column=col + 2)
+                cell.border = thin_border
+
+                if work[col]:
+                    if arr[col]:
+                        cell.fill = GREEN
+                        cell.value = "T"
+                    elif dep[col]:
+                        cell.fill = BLUE
+                        cell.value = "L"
+                    elif ops[col]:
+                        cell.fill = YELLOW
+                        cell.value = "S"
+                    else:
+                        cell.fill = ORANGE
+                        cell.value = "X"
+                else:
+                    cell.fill = WHITE
+
+            ws.cell(row=row, column=50, value=hours)
+            row += 1
+
+        ws.column_dimensions['A'].width = 15
+        for col in range(2, 50):
+            ws.column_dimensions[get_column_letter(col)].width = 3
+
+    report = []
+    for w in workers:
+        if len(all_days[w]) >= 2:
+            work1 = all_days[w][0]['work_slots']
+            work2 = all_days[w][1]['work_slots']
+            combined = work1 + work2
+            result = check_stcw_at_slot(combined, 95)
+            report.append({'worker': w, 'analysis': result})
+
+    return wb, report
+
+
+def generate_schedule_with_manual_day1(days_data, manual_day1_work):
+    """
+    Generoi vuorot normaalisti, mutta korvaa päivän 1 työslotit manuaalisella taulukolla.
+    manual_day1_work: dict {worker_name: [48 x bool]}
+    """
+    wb, all_days, _ = generate_schedule(days_data)
+
+    workers = ['Bosun', 'Dayman EU', 'Dayman PH1', 'Dayman PH2',
+               'Watchman 1', 'Watchman 2', 'Watchman 3']
+
+    for worker in workers:
+        if worker not in all_days or not all_days[worker]:
+            continue
+        slots = manual_day1_work.get(worker, [False] * 48)
+        slots = list(slots)[:48]
+        if len(slots) < 48:
+            slots.extend([False] * (48 - len(slots)))
+
+        all_days[worker][0]['work_slots'] = [bool(x) for x in slots]
+        all_days[worker][0]['arrival_slots'] = [False] * 48
+        all_days[worker][0]['departure_slots'] = [False] * 48
+        all_days[worker][0]['port_op_slots'] = [False] * 48
+
+    wb, report = build_workbook_and_report(all_days, len(days_data), workers)
+    return wb, all_days, report
