@@ -680,6 +680,7 @@ def generate_schedule(days_data):
             for dayman in daymen:
                 if dayman not in forced:
                     all_dayman_work[dayman][slot] = False
+                    all_dayman_sluice[dayman][slot] = False
             for dayman in first_hour_daymen:
                 all_dayman_work[dayman][slot] = True
                 all_dayman_sluice[dayman][slot] = True
@@ -692,6 +693,7 @@ def generate_schedule(days_data):
             for dayman in daymen:
                 if dayman not in forced:
                     all_dayman_work[dayman][slot] = False
+                    all_dayman_sluice[dayman][slot] = False
             for dayman in departure_daymen:
                 all_dayman_work[dayman][slot] = True
                 all_dayman_sluice[dayman][slot] = True
