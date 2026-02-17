@@ -30,6 +30,8 @@ YELLOW = PatternFill("solid", fgColor="FFFF00")
 GREEN = PatternFill("solid", fgColor="90EE90")
 BLUE = PatternFill("solid", fgColor="ADD8E6")
 ORANGE = PatternFill("solid", fgColor="FFA500")
+PURPLE = PatternFill("solid", fgColor="C9A0DC")
+PINK = PatternFill("solid", fgColor="FFB6C1")
 WHITE = PatternFill("solid", fgColor="FFFFFF")
 
 # Vakiot
@@ -359,6 +361,11 @@ def generate_schedule(days_data):
         arrival_m = info.get('arrival_minute', 0)
         departure_h = info.get('departure_hour')
         departure_m = info.get('departure_minute', 0)
+
+        sluice_h = info.get('sluice_hour')
+        sluice_m = info.get('sluice_minute', 0)
+        shifting_h = info.get('shifting_hour')
+        shifting_m = info.get('shifting_minute', 0)
         
         # Muunna indekseiksi
         if op_start_h is not None:
@@ -380,6 +387,9 @@ def generate_schedule(days_data):
         
         departure_start = time_to_index(departure_h, departure_m) if departure_h is not None else None
         departure_end = departure_start + 2 if departure_start is not None else None
+
+        sluice_start = time_to_index(sluice_h, sluice_m) if sluice_h is not None else None
+        shifting_start = time_to_index(shifting_h, shifting_m) if shifting_h is not None else None
         
         # Edellisen päivän työvuorot
         prev_day_work = {}
@@ -409,6 +419,8 @@ def generate_schedule(days_data):
             'arrival_slots': bosun_arr,
             'departure_slots': bosun_dep,
             'port_op_slots': bosun_ops,
+            'sluice_slots': [False] * 48,
+            'shifting_slots': [False] * 48,
             'notes': []
         })
         
@@ -420,12 +432,14 @@ def generate_schedule(days_data):
         all_dayman_arr = {dm: [False] * 48 for dm in daymen}
         all_dayman_dep = {dm: [False] * 48 for dm in daymen}
         all_dayman_ops = {dm: [False] * 48 for dm in daymen}
+        all_dayman_sluice = {dm: [False] * 48 for dm in daymen}
+        all_dayman_shifting = {dm: [False] * 48 for dm in daymen}
         
         # VAIHE 1: Tulot kaikille
         for dayman in daymen:
             add_slots(arrival_start, arrival_end, all_dayman_work[dayman], all_dayman_arr[dayman])
         
-        # VAIHE 2: Lähdöt kahdelle daymanille
+        # VAIHE 2: Lähdöt kaikille daymaneille
         if departure_start is not None:
             departure_scores = {}
             for dayman in daymen:
@@ -436,11 +450,46 @@ def generate_schedule(days_data):
                     if all_dayman_work[dayman][i]:
                         score += 50
                 departure_scores[dayman] = score
-            
+
             sorted_daymen = sorted(departure_scores.keys(), key=lambda x: departure_scores[x], reverse=True)
             for dayman in sorted_daymen:
                 add_slots(departure_start, departure_end, all_dayman_work[dayman], all_dayman_dep[dayman])
-        
+
+        # VAIHE 2.1: Slussi (2h): 1. tunti kaksi daymania, 2. tunti kaikki daymanit
+        sluice_first_hour_slots = set()
+        first_hour_daymen = []
+        if sluice_start is not None:
+            first_hour_slots = range(max(0, sluice_start), min(sluice_start + 2, 48))
+            second_hour_slots = range(max(0, sluice_start + 2), min(sluice_start + 4, 48))
+            sluice_first_hour_slots = set(first_hour_slots)
+
+            sluice_scores = {}
+            for dayman in daymen:
+                score = 0
+                if sluice_start > 0 and all_dayman_work[dayman][sluice_start - 1]:
+                    score += 150
+                score += (10 - (sum(all_dayman_work[dayman]) / 2)) * 10
+                sluice_scores[dayman] = score
+
+            first_hour_daymen = sorted(daymen, key=lambda dm: sluice_scores[dm], reverse=True)[:2]
+            for slot in first_hour_slots:
+                for dayman in first_hour_daymen:
+                    all_dayman_work[dayman][slot] = True
+                    all_dayman_sluice[dayman][slot] = True
+
+            for slot in second_hour_slots:
+                for dayman in daymen:
+                    all_dayman_work[dayman][slot] = True
+                    all_dayman_sluice[dayman][slot] = True
+
+        # VAIHE 2.2: Shiftaus (2h): kaikki daymanit paikalla koko ajan
+        if shifting_start is not None:
+            shifting_slots = range(max(0, shifting_start), min(shifting_start + 4, 48))
+            for slot in shifting_slots:
+                for dayman in daymen:
+                    all_dayman_work[dayman][slot] = True
+                    all_dayman_shifting[dayman][slot] = True
+
         # VAIHE 3: Jaa OP-slotit pisteytyksellä
         op_slots = []
         for slot in range(max(0, op_start), min(op_end, 48)):
@@ -467,6 +516,9 @@ def generate_schedule(days_data):
 
             scores = {}
             for dayman in daymen:
+                if slot in sluice_first_hour_slots and dayman not in first_hour_daymen:
+                    scores[dayman] = -10000
+                    continue
                 scores[dayman] = score_slot(
                     slot, dayman, all_dayman_work[dayman], all_dayman_work,
                     prev_day_work[dayman], daymen,
@@ -497,6 +549,8 @@ def generate_schedule(days_data):
                             for s in range(gap_start, gap_end):
                                 if LUNCH_START <= s < LUNCH_END:
                                     continue
+                                if s in sluice_first_hour_slots and dayman not in first_hour_daymen:
+                                    continue
                                 if violates_single_outside_worker_rule(dayman, s, all_dayman_work, daymen, op_start, op_end):
                                     continue
                                 all_dayman_work[dayman][s] = True
@@ -520,7 +574,9 @@ def generate_schedule(days_data):
                         continue
                     if LUNCH_START <= slot < LUNCH_END:
                         continue
-            
+                    if slot in sluice_first_hour_slots and dayman not in first_hour_daymen:
+                        continue
+
                     score = score_slot(
                         slot, dayman, all_dayman_work[dayman], all_dayman_work,
                         prev_day_work[dayman], daymen,
@@ -575,6 +631,8 @@ def generate_schedule(days_data):
                             for s in range(gap_start, gap_end):
                                 if LUNCH_START <= s < LUNCH_END:
                                     continue
+                                if s in sluice_first_hour_slots and dayman not in first_hour_daymen:
+                                    continue
                                 if violates_single_outside_worker_rule(dayman, s, all_dayman_work, daymen, op_start, op_end):
                                     continue
                                 all_dayman_work[dayman][s] = True
@@ -590,6 +648,8 @@ def generate_schedule(days_data):
                 'arrival_slots': all_dayman_arr[dayman],
                 'departure_slots': all_dayman_dep[dayman],
                 'port_op_slots': all_dayman_ops[dayman],
+                'sluice_slots': all_dayman_sluice[dayman],
+                'shifting_slots': all_dayman_shifting[dayman],
                 'notes': []
             })
         
@@ -611,6 +671,8 @@ def generate_schedule(days_data):
                 'arrival_slots': [False] * 48,
                 'departure_slots': [False] * 48,
                 'port_op_slots': [False] * 48,
+                'sluice_slots': [False] * 48,
+                'shifting_slots': [False] * 48,
                 'notes': []
             })
     
@@ -645,7 +707,9 @@ def generate_schedule(days_data):
             arr = data['arrival_slots']
             dep = data['departure_slots']
             ops = data['port_op_slots']
-            
+            sluice = data.get('sluice_slots', [False] * 48)
+            shifting = data.get('shifting_slots', [False] * 48)
+
             hours = sum(work) / 2
             
             for col in range(48):
@@ -659,6 +723,12 @@ def generate_schedule(days_data):
                     elif dep[col]:
                         cell.fill = BLUE
                         cell.value = "L"
+                    elif sluice[col]:
+                        cell.fill = PURPLE
+                        cell.value = "SL"
+                    elif shifting[col]:
+                        cell.fill = PINK
+                        cell.value = "SH"
                     elif ops[col]:
                         cell.fill = YELLOW
                         cell.value = "S"
@@ -694,13 +764,17 @@ if __name__ == "__main__":
             'arrival_hour': 18, 'arrival_minute': 0,
             'departure_hour': None, 'departure_minute': 0,
             'port_op_start_hour': 19, 'port_op_start_minute': 0,
-            'port_op_end_hour': 0, 'port_op_end_minute': 0
+            'port_op_end_hour': 0, 'port_op_end_minute': 0,
+            'sluice_hour': None, 'sluice_minute': 0,
+            'shifting_hour': None, 'shifting_minute': 0
         },
         {
             'arrival_hour': None, 'arrival_minute': 0,
             'departure_hour': 20, 'departure_minute': 0,
             'port_op_start_hour': 0, 'port_op_start_minute': 0,
-            'port_op_end_hour': 19, 'port_op_end_minute': 0
+            'port_op_end_hour': 19, 'port_op_end_minute': 0,
+            'sluice_hour': None, 'sluice_minute': 0,
+            'shifting_hour': None, 'shifting_minute': 0
         }
     ]
     
@@ -763,6 +837,8 @@ def build_workbook_and_report(all_days, num_days, workers):
             arr = data['arrival_slots']
             dep = data['departure_slots']
             ops = data['port_op_slots']
+            sluice = data.get('sluice_slots', [False] * 48)
+            shifting = data.get('shifting_slots', [False] * 48)
 
             hours = sum(work) / 2
 
@@ -777,6 +853,12 @@ def build_workbook_and_report(all_days, num_days, workers):
                     elif dep[col]:
                         cell.fill = BLUE
                         cell.value = "L"
+                    elif sluice[col]:
+                        cell.fill = PURPLE
+                        cell.value = "SL"
+                    elif shifting[col]:
+                        cell.fill = PINK
+                        cell.value = "SH"
                     elif ops[col]:
                         cell.fill = YELLOW
                         cell.value = "S"
@@ -827,6 +909,8 @@ def generate_schedule_with_manual_day1(days_data, manual_day1_work):
         all_days[worker][0]['arrival_slots'] = [False] * 48
         all_days[worker][0]['departure_slots'] = [False] * 48
         all_days[worker][0]['port_op_slots'] = [False] * 48
+        all_days[worker][0]['sluice_slots'] = [False] * 48
+        all_days[worker][0]['shifting_slots'] = [False] * 48
 
     wb, report = build_workbook_and_report(all_days, len(days_data), workers)
     return wb, all_days, report
