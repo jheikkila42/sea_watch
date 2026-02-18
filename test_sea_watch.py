@@ -169,6 +169,7 @@ class TestEveningShifts:
 class TestSTCW:
     """STCW-lepoaikasäännöt"""
     
+    @pytest.mark.stcw_rest
     def test_minimum_10h_rest(self):
         """Vähintään 10h lepoa 24h jaksossa"""
         all_days = run_scenario(
@@ -188,6 +189,7 @@ class TestSTCW:
             assert ana['total_rest'] >= 10, \
                 f"{w}: vain {ana['total_rest']}h lepoa (min 10h)"
     
+    @pytest.mark.stcw_split
     def test_max_two_rest_periods(self):
         """Lepo max 2 jaksossa"""
         all_days = run_scenario(
@@ -207,6 +209,7 @@ class TestSTCW:
             assert ana['rest_period_count'] <= 2, \
                 f"{w}: {ana['rest_period_count']} lepojaksoa (max 2)"
     
+    @pytest.mark.stcw_long_rest
     def test_one_rest_period_min_6h(self):
         """Yksi lepojakso vähintään 6h"""
         all_days = run_scenario(
@@ -226,6 +229,7 @@ class TestSTCW:
             assert ana['longest_rest'] >= 6, \
                 f"{w}: pisin lepo {ana['longest_rest']}h (min 6h)"
     
+    @pytest.mark.stcw_status
     def test_stcw_status_ok(self):
         """STCW-status on OK normaalissa skenaariossa"""
         all_days = run_scenario(
@@ -396,3 +400,89 @@ class TestRegressions:
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+@pytest.mark.special_ops
+class TestSpecialOperationsMandatory:
+    """Slussi ja shiftaus ovat pakollisia kuten tulo/lähtö."""
+
+    def test_sluice_arrival_at_17_is_forced_for_daymen(self):
+        days_data = [
+            {
+                'arrival_hour': None,
+                'arrival_minute': 0,
+                'departure_hour': None,
+                'departure_minute': 0,
+                'port_op_start_hour': 8,
+                'port_op_start_minute': 0,
+                'port_op_end_hour': 17,
+                'port_op_end_minute': 0,
+                'sluice_arrival_hour': 17,
+                'sluice_arrival_minute': 0,
+                'sluice_departure_hour': None,
+                'sluice_departure_minute': 0,
+                'shifting_hour': None,
+                'shifting_minute': 0,
+            }
+        ]
+
+        _, all_days, _ = generate_schedule(days_data)
+        daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+
+        # 17:00-18:00 => 2 daymania
+        for slot in [34, 35]:
+            working = sum(all_days[w][0]['work_slots'][slot] for w in daymen)
+            marked = sum(all_days[w][0]['sluice_slots'][slot] for w in daymen)
+            assert working == 2
+            assert marked == 2
+
+        # 18:00-19:00 => 3 daymania
+        for slot in [36, 37]:
+            working = sum(all_days[w][0]['work_slots'][slot] for w in daymen)
+            marked = sum(all_days[w][0]['sluice_slots'][slot] for w in daymen)
+            assert working == 3
+            assert marked == 3
+
+    def test_shifting_is_forced_for_all_daymen(self):
+        days_data = [
+            {
+                'arrival_hour': None,
+                'arrival_minute': 0,
+                'departure_hour': None,
+                'departure_minute': 0,
+                'port_op_start_hour': 8,
+                'port_op_start_minute': 0,
+                'port_op_end_hour': 17,
+                'port_op_end_minute': 0,
+                'sluice_arrival_hour': None,
+                'sluice_arrival_minute': 0,
+                'sluice_departure_hour': None,
+                'sluice_departure_minute': 0,
+                'shifting_hour': 17,
+                'shifting_minute': 0,
+            }
+        ]
+
+        _, all_days, _ = generate_schedule(days_data)
+        daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+
+        for slot in [34, 35]:
+            working = sum(all_days[w][0]['work_slots'][slot] for w in daymen)
+            marked = sum(all_days[w][0]['shifting_slots'][slot] for w in daymen)
+            assert working == 3
+            assert marked == 3
+
+
+@pytest.mark.daily_hours
+class TestDailyMinimumHours:
+    """Kalenterivuorokaudessa vähintään 8h töitä daymaneille."""
+
+    def test_daymen_have_minimum_8h_per_calendar_day(self):
+        all_days = run_scenario(
+            arrival_hour=8, departure_hour=19,
+            op_start_hour=10, op_end_hour=18
+        )
+
+        for day_idx in range(2):
+            for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
+                hours = sum(all_days[w][day_idx]['work_slots']) / 2
+                assert hours >= 8, f"{w} päivä {day_idx+1}: {hours}h (min 8h)"

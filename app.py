@@ -1,220 +1,357 @@
-import streamlit as st
+import copy
 import io
+
 import pandas as pd
+import streamlit as st
 
-# importoi esittelyversio
-from sea_watch_10 import generate_schedule, parse_time, time_to_index, index_to_time_str
+from sea_watch_10 import (
+    build_workbook_and_report,
+    check_stcw_at_slot,
+    generate_schedule,
+    generate_schedule_with_manual_day1,
+)
+
+WORKERS = [
+    "Bosun",
+    "Dayman EU",
+    "Dayman PH1",
+    "Dayman PH2",
+    "Watchman 1",
+    "Watchman 2",
+    "Watchman 3",
+]
+TIME_COLS = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 30]]
 
 
-# -------------------------------------------------------------------
-# APU: TIME PARSER STREAMLITILLE
-# -------------------------------------------------------------------
+def parse_time(time_str: str):
+    normalized = time_str.strip().replace(".", ":")
+
+    if ":" in normalized:
+        parts = normalized.split(":")
+        if len(parts) != 2:
+            raise ValueError(f"Virheellinen aika: {time_str}")
+        h, m = int(parts[0]), int(parts[1])
+    else:
+        # Salli myös muodot kuten "22" => 22:00
+        h, m = int(normalized), 0
+
+    if not (0 <= h <= 23 and m in (0, 30)):
+        raise ValueError("Ajan pitää olla muodossa HH:MM, HH.MM tai pelkkä tunti (esim 22)")
+    return h, m
+
+
 def parse_optional_time(label: str, key: str):
-    """
-    Ottaa käyttäjältä HH:MM-merkkijonon ja palauttaa (hour, minute) tai (None, None).
-    """
-    val = st.text_input(label, key=key)
-    val = val.strip()
-
+    val = st.text_input(label, key=key).strip()
     if val == "":
         return None, None
-
     h, m = parse_time(val)
     return h, m
 
 
-# -------------------------------------------------------------------
-# APU: RAKENTAA LISTAN PÄIVÄTIEDOISTA
-# -------------------------------------------------------------------
-def build_days_data(num_days: int):
-    """
-    Luo sovelluksen input-kentistä days_data-listan,
-    jonka generate_schedule() tarvitsee.
-    """
+def build_days_data(start_day: int, end_day: int, key_prefix: str):
     days = []
-
-    for day in range(1, num_days + 1):
-
-        with st.expander(f"Päivä {day}", expanded=(day == 1)):
-            col1, col2 = st.columns(2)
+    for day in range(start_day, end_day + 1):
+        with st.expander(f"Päivä {day}", expanded=(day == start_day)):
+            col1, col2, col3 = st.columns(3)
 
             with col1:
                 arr_h, arr_m = parse_optional_time(
                     "Satamaan tuloaika (HH:MM, tyhjä jos ei tuloa)",
-                    key=f"arr_{day}"
+                    key=f"{key_prefix}_arr_{day}",
                 )
                 dep_h, dep_m = parse_optional_time(
                     "Satamasta lähtöaika (HH:MM, tyhjä jos ei lähtöä)",
-                    key=f"dep_{day}"
+                    key=f"{key_prefix}_dep_{day}",
                 )
 
             with col2:
                 op_s_h, op_s_m = parse_optional_time(
                     "Satamaoperaation alku (HH:MM)",
-                    key=f"opstart_{day}"
+                    key=f"{key_prefix}_opstart_{day}",
                 )
                 op_e_h, op_e_m = parse_optional_time(
                     "Satamaoperaation loppu (HH:MM)",
-                    key=f"opend_{day}"
+                    key=f"{key_prefix}_opend_{day}",
                 )
 
-            days.append({
-                "arrival_hour": arr_h,
-                "arrival_minute": arr_m or 0,
-                "departure_hour": dep_h,
-                "departure_minute": dep_m or 0,
-                "port_op_start_hour": op_s_h,
-                "port_op_start_minute": op_s_m or 0,
-                "port_op_end_hour": op_e_h,
-                "port_op_end_minute": op_e_m or 0,
-            })
+            with col3:
+                sluice_arr_h, sluice_arr_m = parse_optional_time(
+                    "Slussi - tulo alku (HH:MM, kesto 2h)",
+                    key=f"{key_prefix}_sluice_arr_{day}",
+                )
+                shifting_h, shifting_m = parse_optional_time(
+                    "Shiftaus alku (HH:MM, kesto 1h)",
+                    key=f"{key_prefix}_shifting_{day}",
+                )
+
+            sluice_dep_h, sluice_dep_m = parse_optional_time(
+                "Slussi - lähtö alku (HH:MM, kesto 2h)",
+                key=f"{key_prefix}_sluice_dep_{day}",
+            )
+
+            days.append(
+                {
+                    "arrival_hour": arr_h,
+                    "arrival_minute": arr_m or 0,
+                    "departure_hour": dep_h,
+                    "departure_minute": dep_m or 0,
+                    "port_op_start_hour": op_s_h,
+                    "port_op_start_minute": op_s_m or 0,
+                    "port_op_end_hour": op_e_h,
+                    "port_op_end_minute": op_e_m or 0,
+                    "sluice_arrival_hour": sluice_arr_h,
+                    "sluice_arrival_minute": sluice_arr_m or 0,
+                    "sluice_departure_hour": sluice_dep_h,
+                    "sluice_departure_minute": sluice_dep_m or 0,
+                    "shifting_hour": shifting_h,
+                    "shifting_minute": shifting_m or 0,
+                }
+            )
 
     return days
 
 
-# -------------------------------------------------------------------
-# APU: LUO TAULUKKONÄKYMÄ
-# -------------------------------------------------------------------
 def create_schedule_table(all_days, day_idx, workers):
-    """
-    Luo pandas DataFrame työvuorotaulukosta.
-    """
-    # Aikasarakkeet (00:00 - 23:30)
-    time_cols = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 30]]
-    
-    # Rakenna data
     data = []
     for w in workers:
-        row = {'Työntekijä': w}
+        row = {"Työntekijä": w}
         day_data = all_days[w][day_idx]
-        work = day_data['work_slots']
-        arr = day_data['arrival_slots']
-        dep = day_data['departure_slots']
-        
-        for i, time_col in enumerate(time_cols):
-            if i < len(work):
-                if arr[i]:
-                    row[time_col] = 'B'
-                elif dep[i]:
-                    row[time_col] = 'C'
-                elif work[i]:
-                    row[time_col] = '●'
-                else:
-                    row[time_col] = ''
+        work = day_data["work_slots"]
+        arr = day_data["arrival_slots"]
+        dep = day_data["departure_slots"]
+        sluice = day_data.get("sluice_slots", [False] * 48)
+        shifting = day_data.get("shifting_slots", [False] * 48)
+
+        for i, time_col in enumerate(TIME_COLS):
+            if sluice[i]:
+                row[time_col] = "SL"
+            elif shifting[i]:
+                row[time_col] = "SH"
+            elif arr[i]:
+                row[time_col] = "B"
+            elif dep[i]:
+                row[time_col] = "C"
+            elif work[i]:
+                row[time_col] = "●"
             else:
-                row[time_col] = ''
+                row[time_col] = ""
         data.append(row)
-    
+
     return pd.DataFrame(data)
 
 
 def style_schedule_table(df):
-    """
-    Lisää värit taulukkoon.
-    """
     def color_cell(val):
-        if val == '●':
-            return 'background-color: #4472C4; color: white'
-        elif val == 'B':
-            return 'background-color: #FFC000; color: black'
-        elif val == 'C':
-            return 'background-color: #FF6600; color: white'
-        else:
-            return ''
-    
+        if val == "●":
+            return "background-color: #4472C4; color: white"
+        if val == "B":
+            return "background-color: #FFC000; color: black"
+        if val == "C":
+            return "background-color: #FF6600; color: white"
+        if val == "SL":
+            return "background-color: #C9A0DC; color: black"
+        if val == "SH":
+            return "background-color: #FFB6C1; color: black"
+        return ""
+
     return df.style.applymap(color_cell, subset=df.columns[1:])
 
 
-# -------------------------------------------------------------------
-# SOVELLUS
-# -------------------------------------------------------------------
+def init_manual_day1_df():
+    data = {"Työntekijä": WORKERS}
+    for col in TIME_COLS:
+        data[col] = [False] * len(WORKERS)
+    return pd.DataFrame(data)
+
+
+def convert_manual_df_to_slots(df: pd.DataFrame):
+    manual = {}
+    for _, row in df.iterrows():
+        worker = row["Työntekijä"]
+        manual[worker] = [bool(row[t]) for t in TIME_COLS]
+    return manual
+
+
+def create_editable_work_df(all_days, day_idx):
+    data = {"Työntekijä": WORKERS}
+    for col_idx, col in enumerate(TIME_COLS):
+        data[col] = [bool(all_days[w][day_idx]["work_slots"][col_idx]) for w in WORKERS]
+    return pd.DataFrame(data)
+
+
+def apply_edited_work_df(all_days, day_idx, edited_df):
+    for _, row in edited_df.iterrows():
+        worker = row["Työntekijä"]
+        if worker not in all_days:
+            continue
+        all_days[worker][day_idx]["work_slots"] = [bool(row[t]) for t in TIME_COLS]
+
+
+def render_results(num_days, wb, all_days):
+    st.subheader("📋 Työvuorot")
+    for d in range(num_days):
+        st.markdown(f"**Päivä {d+1}**")
+        df = create_schedule_table(all_days, d, WORKERS)
+        st.dataframe(style_schedule_table(df), use_container_width=True, height=300)
+        st.markdown("---")
+
+    st.subheader("📊 STCW-lepoaika-analyysi")
+    stcw_data = []
+    for d in range(1, num_days):
+        for w in WORKERS:
+            prev = all_days[w][d - 1]["work_slots"]
+            work = all_days[w][d]["work_slots"]
+            ana = check_stcw_at_slot(prev + work, 95)
+            stcw_data.append(
+                {
+                    "Päivä": d + 1,
+                    "Työntekijä": w,
+                    "Työtunnit": sum(work) / 2,
+                    "Lepo (h)": ana["total_rest"],
+                    "Pisin lepo (h)": ana["longest_rest"],
+                    "Status": "✓ OK" if ana["status"] == "OK" else "⚠ VAROITUS",
+                }
+            )
+
+    st.dataframe(pd.DataFrame(stcw_data), use_container_width=True)
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    st.download_button(
+        label="📥 Lataa Excel-työvuorolista",
+        data=buffer,
+        file_name="tyovuorot.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def store_generated_result(wb, all_days, num_days):
+    st.session_state["generated_wb"] = wb
+    st.session_state["generated_all_days"] = all_days
+    st.session_state["generated_num_days"] = num_days
+
+
+def render_post_generation_editor():
+    if "generated_all_days" not in st.session_state:
+        return
+
+    st.markdown("## ✏️ Muokkaa vuoroja generoinnin jälkeen")
+    st.caption(
+        "Voit klikata soluja (ja maalata alueita data editorissa) muuttaaksesi työslotteja. "
+        "Paina lopuksi 'Generoi uudelleen', niin Excel-linkki päivittyy uuden tilanteen mukaan."
+    )
+
+    num_days = st.session_state["generated_num_days"]
+    all_days = st.session_state["generated_all_days"]
+
+    with st.form("post_generation_edit_form"):
+        edited_dfs = []
+        for d in range(num_days):
+            st.markdown(f"**Muokattava päivä {d+1}**")
+            base_df = create_editable_work_df(all_days, d)
+            edited_df = st.data_editor(
+                base_df,
+                hide_index=True,
+                use_container_width=True,
+                key=f"post_edit_day_{d}",
+                disabled=["Työntekijä"],
+                column_config={
+                    c: st.column_config.CheckboxColumn(c, default=False) for c in TIME_COLS
+                },
+            )
+            edited_dfs.append(edited_df)
+
+        regenerate_clicked = st.form_submit_button("🔁 Generoi uudelleen (päivitä Excel)")
+
+    if regenerate_clicked:
+        updated_all_days = copy.deepcopy(st.session_state["generated_all_days"])
+        for d, edited_df in enumerate(edited_dfs):
+            apply_edited_work_df(updated_all_days, d, edited_df)
+
+        wb, _ = build_workbook_and_report(updated_all_days, num_days, WORKERS)
+        store_generated_result(wb, updated_all_days, num_days)
+        st.success("Vuorot päivitetty. Excel-linkki käyttää nyt muokattua listaa.")
+
+
 def main():
     st.set_page_config(page_title="Sea Watch - Testivuorogeneraattori", layout="wide")
 
     st.title("🛳️ Sea Watch - Työvuorolistageneraattori")
-    st.write("Syötä päivien tulo-/lähtöajat ja satamaoperaatiot, niin sovellus "
-             "laskee työvuorot ja STCW-lepoajat automaattisesti.")
-
-    # Määrä sivupalkkiin
-    num_days = st.sidebar.number_input(
-        "Päivien määrä",
-        min_value=1,
-        max_value=14,
-        value=2,
-        step=1
+    st.write(
+        "Syötä päivien tiedot. Voit käyttää automaattista syöttöä kaikille päiville "
+        "tai syöttää päivän 1 manuaalisesti maalaamalla tunnit taulukkoon."
     )
 
+    num_days = st.sidebar.number_input(
+        "Päivien määrä", min_value=1, max_value=14, value=2, step=1
+    )
     st.sidebar.info("Vinkki: jätä kenttä tyhjäksi jos kyseistä tapahtumaa ei ole.")
 
-    # Kerää käyttäjältä kaikkien päivien datat
-    days_data = build_days_data(num_days)
+    tab_auto, tab_manual = st.tabs(["Automaattinen syöttö", "Päivä 1 manuaalinen"])
 
-    if st.button("🚀 Generoi työvuorot"):
+    with tab_auto:
+        st.markdown("Syötä kaikkien päivien tulo-/lähtöajat ja satamaoperaatiot.")
+        days_data = build_days_data(1, num_days, key_prefix="auto")
 
-        try:
-            wb, all_days, report = generate_schedule(days_data)
-        except Exception as e:
-            st.error(f"Virhe generoinnissa: {e}")
-            raise
+        if st.button("🚀 Generoi työvuorot", key="gen_auto"):
+            wb, all_days, _ = generate_schedule(days_data)
+            store_generated_result(wb, all_days, num_days)
 
-        # Työntekijälista
-        workers = ["Bosun", "Dayman EU", "Dayman PH1", "Dayman PH2", 
-                   "Watchman 1", "Watchman 2", "Watchman 3"]
-
-        # Näytä taulukot jokaiselle päivälle
-        st.subheader("📋 Työvuorot")
-        
-        for d in range(num_days):
-            st.markdown(f"**Päivä {d+1}**")
-            
-            df = create_schedule_table(all_days, d, workers)
-            styled_df = style_schedule_table(df)
-            
-            # Näytä vain osa sarakkeista kerrallaan (parempi luettavuus)
-            st.dataframe(styled_df, use_container_width=True, height=300)
-            
-            st.markdown("---")
-
-        # STCW-yhteenveto
-        st.subheader("📊 STCW-lepoaika-analyysi")
-        
-        stcw_data = []
-        for d in range(1, num_days):  # Päivästä 2 alkaen
-            for w in workers:
-                dat = all_days[w][d]
-                prev = all_days[w][d-1]['work_slots']
-                work = dat['work_slots']
-                
-                from sea_watch_10 import analyze_stcw_from_work_starts
-                combined = prev + work
-                ana = analyze_stcw_from_work_starts(combined)
-                
-                hours = sum(work) / 2
-                stcw_data.append({
-                    'Päivä': d + 1,
-                    'Työntekijä': w,
-                    'Työtunnit': hours,
-                    'Lepo (h)': ana['total_rest'],
-                    'Pisin lepo (h)': ana['longest_rest'],
-                    'Status': '✓ OK' if ana['status'] == 'OK' else '⚠ VAROITUS'
-                })
-        
-        stcw_df = pd.DataFrame(stcw_data)
-        st.dataframe(stcw_df, use_container_width=True)
-
-        # Excel-tiedostoksi muistiin
-        buffer = io.BytesIO()
-        wb.save(buffer)
-        buffer.seek(0)
-
-        st.download_button(
-            label="📥 Lataa Excel-työvuorolista",
-            data=buffer,
-            file_name="tyovuorot.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    with tab_manual:
+        st.markdown(
+            "Maalaa päivän 1 työtunnit työntekijöille. Päivien 2+ ajat syötetään normaalisti."
         )
+
+        manual_default = init_manual_day1_df()
+        manual_df = st.data_editor(
+            manual_default,
+            hide_index=True,
+            use_container_width=True,
+            key="manual_day1_editor",
+            disabled=["Työntekijä"],
+            column_config={
+                c: st.column_config.CheckboxColumn(c, default=False) for c in TIME_COLS
+            },
+        )
+
+        if num_days >= 2:
+            st.markdown("#### Päivät 2+ (normaali syöttö)")
+            days_data_rest = build_days_data(2, num_days, key_prefix="manual")
+        else:
+            days_data_rest = []
+
+        if st.button("🚀 Generoi työvuorot (manuaalinen päivä 1)", key="gen_manual"):
+            day1_placeholder = {
+                "arrival_hour": None,
+                "arrival_minute": 0,
+                "departure_hour": None,
+                "departure_minute": 0,
+                "port_op_start_hour": 8,
+                "port_op_start_minute": 0,
+                "port_op_end_hour": 17,
+                "port_op_end_minute": 0,
+                "sluice_arrival_hour": None,
+                "sluice_arrival_minute": 0,
+                "sluice_departure_hour": None,
+                "sluice_departure_minute": 0,
+                "shifting_hour": None,
+                "shifting_minute": 0,
+            }
+            days_data = [day1_placeholder] + days_data_rest
+            manual_slots = convert_manual_df_to_slots(manual_df)
+
+            wb, all_days, _ = generate_schedule_with_manual_day1(days_data, manual_slots)
+            store_generated_result(wb, all_days, num_days)
+
+    if "generated_wb" in st.session_state and "generated_all_days" in st.session_state:
+        render_results(
+            st.session_state["generated_num_days"],
+            st.session_state["generated_wb"],
+            st.session_state["generated_all_days"],
+        )
+        render_post_generation_editor()
 
 
 if __name__ == "__main__":
     main()
-
