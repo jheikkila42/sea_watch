@@ -4,12 +4,14 @@ import io
 import pandas as pd
 import streamlit as st
 
-from sea_watch_10 import (
-    build_workbook_and_report,
-    check_stcw_at_slot,
-    generate_schedule,
-    generate_schedule_constrained_daymen,
-    generate_schedule_with_manual_day1,
+import sea_watch_10 as sw
+
+build_workbook_and_report = sw.build_workbook_and_report
+check_stcw_at_slot = sw.check_stcw_at_slot
+generate_schedule = sw.generate_schedule
+generate_schedule_with_manual_day1 = sw.generate_schedule_with_manual_day1
+generate_schedule_constrained_daymen = getattr(
+    sw, "generate_schedule_constrained_daymen", sw.generate_schedule
 )
 
 WORKERS = [
