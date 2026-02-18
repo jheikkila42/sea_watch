@@ -1,8 +1,11 @@
+import copy
 import io
+
 import pandas as pd
 import streamlit as st
 
 from sea_watch_10 import (
+    build_workbook_and_report,
     check_stcw_at_slot,
     generate_schedule,
     generate_schedule_with_manual_day1,
@@ -162,6 +165,21 @@ def convert_manual_df_to_slots(df: pd.DataFrame):
     return manual
 
 
+def create_editable_work_df(all_days, day_idx):
+    data = {"Työntekijä": WORKERS}
+    for col_idx, col in enumerate(TIME_COLS):
+        data[col] = [bool(all_days[w][day_idx]["work_slots"][col_idx]) for w in WORKERS]
+    return pd.DataFrame(data)
+
+
+def apply_edited_work_df(all_days, day_idx, edited_df):
+    for _, row in edited_df.iterrows():
+        worker = row["Työntekijä"]
+        if worker not in all_days:
+            continue
+        all_days[worker][day_idx]["work_slots"] = [bool(row[t]) for t in TIME_COLS]
+
+
 def render_results(num_days, wb, all_days):
     st.subheader("📋 Työvuorot")
     for d in range(num_days):
@@ -201,6 +219,51 @@ def render_results(num_days, wb, all_days):
     )
 
 
+def store_generated_result(wb, all_days, num_days):
+    st.session_state["generated_wb"] = wb
+    st.session_state["generated_all_days"] = all_days
+    st.session_state["generated_num_days"] = num_days
+
+
+def render_post_generation_editor():
+    if "generated_all_days" not in st.session_state:
+        return
+
+    st.markdown("## ✏️ Muokkaa vuoroja generoinnin jälkeen")
+    st.caption(
+        "Voit klikata soluja (ja maalata alueita data editorissa) muuttaaksesi työslotteja. "
+        "Paina lopuksi 'Generoi uudelleen', niin Excel-linkki päivittyy uuden tilanteen mukaan."
+    )
+
+    num_days = st.session_state["generated_num_days"]
+    all_days = st.session_state["generated_all_days"]
+
+    edited_dfs = []
+    for d in range(num_days):
+        st.markdown(f"**Muokattava päivä {d+1}**")
+        base_df = create_editable_work_df(all_days, d)
+        edited_df = st.data_editor(
+            base_df,
+            hide_index=True,
+            use_container_width=True,
+            key=f"post_edit_day_{d}",
+            disabled=["Työntekijä"],
+            column_config={
+                c: st.column_config.CheckboxColumn(c, default=False) for c in TIME_COLS
+            },
+        )
+        edited_dfs.append(edited_df)
+
+    if st.button("🔁 Generoi uudelleen (päivitä Excel)", key="regen_after_edit"):
+        updated_all_days = copy.deepcopy(st.session_state["generated_all_days"])
+        for d, edited_df in enumerate(edited_dfs):
+            apply_edited_work_df(updated_all_days, d, edited_df)
+
+        wb, _ = build_workbook_and_report(updated_all_days, num_days, WORKERS)
+        store_generated_result(wb, updated_all_days, num_days)
+        st.success("Vuorot päivitetty. Excel-linkki käyttää nyt muokattua listaa.")
+
+
 def main():
     st.set_page_config(page_title="Sea Watch - Testivuorogeneraattori", layout="wide")
 
@@ -223,7 +286,7 @@ def main():
 
         if st.button("🚀 Generoi työvuorot", key="gen_auto"):
             wb, all_days, _ = generate_schedule(days_data)
-            render_results(num_days, wb, all_days)
+            store_generated_result(wb, all_days, num_days)
 
     with tab_manual:
         st.markdown(
@@ -238,8 +301,7 @@ def main():
             key="manual_day1_editor",
             disabled=["Työntekijä"],
             column_config={
-                c: st.column_config.CheckboxColumn(c, default=False)
-                for c in TIME_COLS
+                c: st.column_config.CheckboxColumn(c, default=False) for c in TIME_COLS
             },
         )
 
@@ -250,7 +312,6 @@ def main():
             days_data_rest = []
 
         if st.button("🚀 Generoi työvuorot (manuaalinen päivä 1)", key="gen_manual"):
-            # Päivä 1 tapahtumadata jätetään neutraaliksi, koska työvuoro tulee manuaalisesti.
             day1_placeholder = {
                 "arrival_hour": None,
                 "arrival_minute": 0,
@@ -271,7 +332,15 @@ def main():
             manual_slots = convert_manual_df_to_slots(manual_df)
 
             wb, all_days, _ = generate_schedule_with_manual_day1(days_data, manual_slots)
-            render_results(num_days, wb, all_days)
+            store_generated_result(wb, all_days, num_days)
+
+    if "generated_wb" in st.session_state and "generated_all_days" in st.session_state:
+        render_results(
+            st.session_state["generated_num_days"],
+            st.session_state["generated_wb"],
+            st.session_state["generated_all_days"],
+        )
+        render_post_generation_editor()
 
 
 if __name__ == "__main__":
