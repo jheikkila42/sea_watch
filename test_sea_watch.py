@@ -72,7 +72,7 @@ def run_scenario(arrival_hour, departure_hour, op_start_hour, op_end_hour,
 # ---------------------------------------------------------------------
 
 class TestDaymenArrivalDeparture:
-    """Kaikki daymanit ovat aina tulossa ja lähdössä"""
+    """Kaikki daymanit ovat tulossa, lähdössä 2 daymania"""
     
     def test_all_daymen_in_arrival_basic(self):
         """Perus: kaikki daymanit tulossa"""
@@ -85,16 +85,15 @@ class TestDaymenArrivalDeparture:
             has_arrival = any(all_days[w][0]['arrival_slots'])
             assert has_arrival, f"{w} ei ole tulossa"
     
-    def test_all_daymen_in_departure_basic(self):
-        """Perus: kaikki daymanit lähdössä"""
+    def test_two_daymen_in_departure_basic(self):
+        """Perus: lähdössä on kaksi daymania"""
         all_days = run_scenario(
             arrival_hour=8, departure_hour=19,
             op_start_hour=10, op_end_hour=18
         )
-        
-        for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
-            has_departure = any(all_days[w][0]['departure_slots'])
-            assert has_departure, f"{w} ei ole lähdössä"
+
+        count = sum(any(all_days[w][0]['departure_slots']) for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2'])
+        assert count == 2, f"Lähdössä pitäisi olla 2 daymania, on {count}"
     
     def test_all_daymen_in_arrival_early_morning(self):
         """Aikainen tulo: kaikki daymanit tulossa"""
@@ -107,16 +106,15 @@ class TestDaymenArrivalDeparture:
             has_arrival = any(all_days[w][0]['arrival_slots'])
             assert has_arrival, f"{w} ei ole tulossa (aikainen tulo)"
     
-    def test_all_daymen_in_departure_late_evening(self):
-        """Myöhäinen lähtö: kaikki daymanit lähdössä"""
+    def test_two_daymen_in_departure_late_evening(self):
+        """Myöhäinen lähtö: lähdössä on kaksi daymania"""
         all_days = run_scenario(
             arrival_hour=8, departure_hour=21,
             op_start_hour=10, op_end_hour=20
         )
-        
-        for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
-            has_departure = any(all_days[w][0]['departure_slots'])
-            assert has_departure, f"{w} ei ole lähdössä (myöhäinen lähtö)"
+
+        count = sum(any(all_days[w][0]['departure_slots']) for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2'])
+        assert count == 2, f"Myöhäisessä lähdössä pitäisi olla 2 daymania, on {count}"
 
 
 
@@ -138,8 +136,8 @@ class TestEveningShifts:
             count = count_daymen_working_at(all_days, 0, hour)
             assert count <= 1, f"Klo {hour}:00 on {count} daymania töissä (max 1)"
     
-    def test_all_daymen_allowed_during_departure(self):
-        """Kaikki daymanit voivat olla töissä lähdön aikana"""
+    def test_two_daymen_during_departure(self):
+        """Lähdön aikana on kaksi daymania"""
         all_days = run_scenario(
             arrival_hour=8, departure_hour=21,
             op_start_hour=10, op_end_hour=20
@@ -147,7 +145,7 @@ class TestEveningShifts:
         
         # Lähtö klo 21 - kaikki saavat olla
         count = count_daymen_working_at(all_days, 0, 21)
-        assert count == 3, f"Lähdön aikana pitäisi olla 3 daymania, on {count}"
+        assert count == 2, f"Lähdön aikana pitäisi olla 2 daymania, on {count}"
     
     def test_evening_coverage_exists(self):
         """Iltakattavuus on olemassa kun operaatio jatkuu iltaan"""
@@ -324,11 +322,13 @@ class TestSpecialCases:
             op_start_hour=8, op_end_hour=20
         )
         
-        # Kaikki daymanit tulossa ja lähdössä
+        # Kaikki daymanit tulossa, lähdössä kaksi daymania
         for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
             has_arr = any(all_days[w][0]['arrival_slots'])
-            has_dep = any(all_days[w][0]['departure_slots'])
-            assert has_arr and has_dep, f"{w} puuttuu tulosta/lähdöstä"
+            assert has_arr, f"{w} puuttuu tulosta"
+
+        dep_count = sum(any(all_days[w][0]['departure_slots']) for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2'])
+        assert dep_count == 2, f"Lähdössä pitäisi olla 2 daymania, on {dep_count}"
     
     def test_no_arrival_no_departure(self):
         """Ei tuloa eikä lähtöä - normaali meripäivä"""

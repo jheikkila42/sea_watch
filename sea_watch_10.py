@@ -454,7 +454,7 @@ def generate_schedule(days_data):
                         score += 50
                 departure_scores[dayman] = score
 
-            sorted_daymen = sorted(departure_scores.keys(), key=lambda x: departure_scores[x], reverse=True)
+            sorted_daymen = sorted(departure_scores.keys(), key=lambda x: departure_scores[x], reverse=True)[:2]
             for dayman in sorted_daymen:
                 add_slots(departure_start, departure_end, all_dayman_work[dayman], all_dayman_dep[dayman])
 
