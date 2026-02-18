@@ -24,12 +24,19 @@ TIME_COLS = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 30]]
 
 
 def parse_time(time_str: str):
-    parts = time_str.split(":")
-    if len(parts) != 2:
-        raise ValueError(f"Virheellinen aika: {time_str}")
-    h, m = int(parts[0]), int(parts[1])
+    normalized = time_str.strip().replace(".", ":")
+
+    if ":" in normalized:
+        parts = normalized.split(":")
+        if len(parts) != 2:
+            raise ValueError(f"Virheellinen aika: {time_str}")
+        h, m = int(parts[0]), int(parts[1])
+    else:
+        # Salli myös muodot kuten "22" => 22:00
+        h, m = int(normalized), 0
+
     if not (0 <= h <= 23 and m in (0, 30)):
-        raise ValueError("Ajan pitää olla muodossa HH:00 tai HH:30")
+        raise ValueError("Ajan pitää olla muodossa HH:MM, HH.MM tai pelkkä tunti (esim 22)")
     return h, m
 
 
@@ -238,23 +245,26 @@ def render_post_generation_editor():
     num_days = st.session_state["generated_num_days"]
     all_days = st.session_state["generated_all_days"]
 
-    edited_dfs = []
-    for d in range(num_days):
-        st.markdown(f"**Muokattava päivä {d+1}**")
-        base_df = create_editable_work_df(all_days, d)
-        edited_df = st.data_editor(
-            base_df,
-            hide_index=True,
-            use_container_width=True,
-            key=f"post_edit_day_{d}",
-            disabled=["Työntekijä"],
-            column_config={
-                c: st.column_config.CheckboxColumn(c, default=False) for c in TIME_COLS
-            },
-        )
-        edited_dfs.append(edited_df)
+    with st.form("post_generation_edit_form"):
+        edited_dfs = []
+        for d in range(num_days):
+            st.markdown(f"**Muokattava päivä {d+1}**")
+            base_df = create_editable_work_df(all_days, d)
+            edited_df = st.data_editor(
+                base_df,
+                hide_index=True,
+                use_container_width=True,
+                key=f"post_edit_day_{d}",
+                disabled=["Työntekijä"],
+                column_config={
+                    c: st.column_config.CheckboxColumn(c, default=False) for c in TIME_COLS
+                },
+            )
+            edited_dfs.append(edited_df)
 
-    if st.button("🔁 Generoi uudelleen (päivitä Excel)", key="regen_after_edit"):
+        regenerate_clicked = st.form_submit_button("🔁 Generoi uudelleen (päivitä Excel)")
+
+    if regenerate_clicked:
         updated_all_days = copy.deepcopy(st.session_state["generated_all_days"])
         for d, edited_df in enumerate(edited_dfs):
             apply_edited_work_df(updated_all_days, d, edited_df)
