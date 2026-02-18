@@ -2,7 +2,8 @@
 
 import pytest
 from sea_watch_10 import (
-    generate_schedule, 
+    generate_schedule,
+    generate_schedule_constrained_daymen,
     analyze_stcw_from_work_starts,
     time_to_index,
     index_to_time_str
@@ -486,3 +487,37 @@ class TestDailyMinimumHours:
             for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
                 hours = sum(all_days[w][day_idx]['work_slots']) / 2
                 assert hours >= 8, f"{w} päivä {day_idx+1}: {hours}h (min 8h)"
+
+
+class TestConstrainedPhase1:
+    """Kokeellisen constrained-vaiheen perustarkistus."""
+
+    def test_constrained_departure_uses_two_daymen_when_available(self):
+        days_data = [
+            {
+                'arrival_hour': 8,
+                'arrival_minute': 0,
+                'departure_hour': 20,
+                'departure_minute': 0,
+                'port_op_start_hour': 10,
+                'port_op_start_minute': 0,
+                'port_op_end_hour': 18,
+                'port_op_end_minute': 0,
+                'sluice_arrival_hour': None,
+                'sluice_arrival_minute': 0,
+                'sluice_departure_hour': None,
+                'sluice_departure_minute': 0,
+                'shifting_hour': None,
+                'shifting_minute': 0,
+            }
+        ]
+
+        try:
+            _, all_days, _ = generate_schedule_constrained_daymen(days_data)
+        except RuntimeError:
+            pytest.skip("ortools ei asennettu tässä ympäristössä")
+
+        daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+        dep_slot = time_to_index(20, 0)
+        count = sum(all_days[w][0]['work_slots'][dep_slot] for w in daymen)
+        assert count == 2

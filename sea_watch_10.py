@@ -195,6 +195,184 @@ def violates_single_outside_worker_rule(dayman, slot, all_dayman_work, daymen, o
     return any(other != dayman and all_dayman_work[other][slot] for other in daymen)
 
 
+
+def _parse_day_time_indices(info):
+    op_start_h = info.get('port_op_start_hour')
+    op_start_m = info.get('port_op_start_minute', 0)
+    op_end_h = info.get('port_op_end_hour')
+    op_end_m = info.get('port_op_end_minute', 0)
+
+    arrival_h = info.get('arrival_hour')
+    arrival_m = info.get('arrival_minute', 0)
+    departure_h = info.get('departure_hour')
+    departure_m = info.get('departure_minute', 0)
+
+    sluice_arr_h = info.get('sluice_arrival_hour', info.get('sluice_hour'))
+    sluice_arr_m = info.get('sluice_arrival_minute', info.get('sluice_minute', 0))
+    sluice_dep_h = info.get('sluice_departure_hour')
+    sluice_dep_m = info.get('sluice_departure_minute', 0)
+    shifting_h = info.get('shifting_hour')
+    shifting_m = info.get('shifting_minute', 0)
+
+    if op_start_h is not None:
+        op_start = time_to_index(op_start_h, op_start_m)
+        if op_end_h is not None and op_end_h < op_start_h:
+            op_end = time_to_index(op_end_h, op_end_m) + 48
+        elif op_end_h == 0 and op_start_h > 0:
+            op_end = 48
+        elif op_end_h is not None:
+            op_end = time_to_index(op_end_h, op_end_m)
+        else:
+            op_end = NORMAL_END
+    else:
+        op_start = NORMAL_START
+        op_end = NORMAL_END
+
+    arrival_start = time_to_index(arrival_h, arrival_m) if arrival_h is not None else None
+    arrival_end = arrival_start + 2 if arrival_start is not None else None
+    departure_start = time_to_index(departure_h, departure_m) if departure_h is not None else None
+    departure_end = departure_start + 2 if departure_start is not None else None
+
+    sluice_arrival_start = time_to_index(sluice_arr_h, sluice_arr_m) if sluice_arr_h is not None else None
+    sluice_departure_start = time_to_index(sluice_dep_h, sluice_dep_m) if sluice_dep_h is not None else None
+    shifting_start = time_to_index(shifting_h, shifting_m) if shifting_h is not None else None
+
+    return {
+        'op_start': op_start,
+        'op_end': op_end,
+        'arrival_start': arrival_start,
+        'arrival_end': arrival_end,
+        'departure_start': departure_start,
+        'departure_end': departure_end,
+        'sluice_arrival_start': sluice_arrival_start,
+        'sluice_departure_start': sluice_departure_start,
+        'shifting_start': shifting_start,
+    }
+
+
+def _solve_daymen_constrained(info):
+    try:
+        from ortools.sat.python import cp_model
+    except Exception as exc:
+        raise RuntimeError(
+            "Constrained-moodi vaatii ortools-paketin (pip install ortools)."
+        ) from exc
+
+    idx = _parse_day_time_indices(info)
+    op_start = idx['op_start']
+    op_end = idx['op_end']
+    arrival_start = idx['arrival_start']
+    arrival_end = idx['arrival_end']
+    departure_start = idx['departure_start']
+    departure_end = idx['departure_end']
+    sluice_arrival_start = idx['sluice_arrival_start']
+    sluice_departure_start = idx['sluice_departure_start']
+    shifting_start = idx['shifting_start']
+
+    daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+    slots = range(48)
+
+    arrival_slots = list(range(max(0, arrival_start), min(arrival_end, 48))) if arrival_start is not None else []
+    departure_slots = list(range(max(0, departure_start), min(departure_end, 48))) if departure_start is not None else []
+    sluice_arr_first = list(range(max(0, sluice_arrival_start), min(sluice_arrival_start + 2, 48))) if sluice_arrival_start is not None else []
+    sluice_arr_second = list(range(max(0, sluice_arrival_start + 2), min(sluice_arrival_start + 4, 48))) if sluice_arrival_start is not None else []
+    sluice_dep_slots = list(range(max(0, sluice_departure_start), min(sluice_departure_start + 4, 48))) if sluice_departure_start is not None else []
+    shifting_slots = list(range(max(0, shifting_start), min(shifting_start + 2, 48))) if shifting_start is not None else []
+
+    model = cp_model.CpModel()
+    x = {(w, s): model.NewBoolVar(f"x_{w}_{s}") for w in daymen for s in slots}
+
+    # Tulo: kaikki daymanit
+    for s in arrival_slots:
+        for w in daymen:
+            model.Add(x[(w, s)] == 1)
+
+    # Lähtö: tasan 2 daymania
+    for s in departure_slots:
+        model.Add(sum(x[(w, s)] for w in daymen) == 2)
+
+    # Slussi tulo
+    for s in sluice_arr_first:
+        model.Add(sum(x[(w, s)] for w in daymen) == 2)
+    for s in sluice_arr_second:
+        model.Add(sum(x[(w, s)] for w in daymen) == 3)
+
+    # Slussi lähtö
+    for s in sluice_dep_slots:
+        model.Add(sum(x[(w, s)] for w in daymen) == 2)
+
+    # Shiftaus
+    for s in shifting_slots:
+        model.Add(sum(x[(w, s)] for w in daymen) == 3)
+
+    # OP 08-17 ulkopuolella: max 1 dayman / slotti
+    for s in slots:
+        is_outside_normal = s < NORMAL_START or s >= NORMAL_END
+        if is_outside_normal and is_during_op_slot(s, op_start, op_end):
+            model.Add(sum(x[(w, s)] for w in daymen) <= 1)
+
+    # Min/Max tunnit per dayman
+    for w in daymen:
+        total_slots = sum(x[(w, s)] for s in slots)
+        model.Add(total_slots >= MIN_HOURS * 2)
+        model.Add(total_slots <= MAX_HOURS * 2)
+
+    # Tavoite: vähän vaihtoja + hyvä OP-kattavuus
+    change_vars = []
+    for w in daymen:
+        for s in range(1, 48):
+            c = model.NewBoolVar(f"chg_{w}_{s}")
+            model.Add(c >= x[(w, s)] - x[(w, s - 1)])
+            model.Add(c >= x[(w, s - 1)] - x[(w, s)])
+            change_vars.append(c)
+
+    op_slots = [s for s in slots if is_during_op_slot(s, op_start, op_end)]
+    op_cov = sum(x[(w, s)] for w in daymen for s in op_slots)
+    model.Maximize(100 * op_cov - 6 * sum(change_vars))
+
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = 3.0
+    solver.parameters.num_search_workers = 8
+    status = solver.Solve(model)
+
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        raise RuntimeError("Constrained-moodi ei löytänyt kelvollista ratkaisua annetuille ehdoille.")
+
+    work = {w: [bool(solver.Value(x[(w, s)])) for s in slots] for w in daymen}
+
+    arr = {w: [False] * 48 for w in daymen}
+    dep = {w: [False] * 48 for w in daymen}
+    sluice = {w: [False] * 48 for w in daymen}
+    shifting = {w: [False] * 48 for w in daymen}
+    ops = {w: [False] * 48 for w in daymen}
+
+    for w in daymen:
+        for s in arrival_slots:
+            if work[w][s]:
+                arr[w][s] = True
+        for s in departure_slots:
+            if work[w][s]:
+                dep[w][s] = True
+        for s in sluice_arr_first + sluice_arr_second + sluice_dep_slots:
+            if work[w][s]:
+                sluice[w][s] = True
+        for s in shifting_slots:
+            if work[w][s]:
+                shifting[w][s] = True
+        for s in op_slots:
+            if work[w][s]:
+                ops[w][s] = True
+
+    return {
+        'work': work,
+        'arrival': arr,
+        'departure': dep,
+        'sluice': sluice,
+        'shifting': shifting,
+        'ops': ops,
+    }
+
+
 # ============================================================================
 # PISTEYTYS - VAIN KÄYTTÄJÄN MÄÄRITTELEMÄT SÄÄNNÖT
 # ============================================================================
@@ -978,5 +1156,29 @@ def generate_schedule_with_manual_day1(days_data, manual_day1_work):
         all_days[worker][0]['sluice_slots'] = [False] * 48
         all_days[worker][0]['shifting_slots'] = [False] * 48
 
+    wb, report = build_workbook_and_report(all_days, len(days_data), workers)
+    return wb, all_days, report
+
+
+def generate_schedule_constrained_daymen(days_data):
+    """
+    Vaihe 1 constrained-moodi: optimoi dayman-slotit CP-SAT:lla päivä kerrallaan.
+    Muut roolit ja Excel-raportointi säilyvät samassa muodossa.
+    """
+    wb, all_days, _ = generate_schedule(days_data)
+    daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+
+    for d, info in enumerate(days_data):
+        solved = _solve_daymen_constrained(info)
+        for w in daymen:
+            all_days[w][d]['work_slots'] = solved['work'][w]
+            all_days[w][d]['arrival_slots'] = solved['arrival'][w]
+            all_days[w][d]['departure_slots'] = solved['departure'][w]
+            all_days[w][d]['port_op_slots'] = solved['ops'][w]
+            all_days[w][d]['sluice_slots'] = solved['sluice'][w]
+            all_days[w][d]['shifting_slots'] = solved['shifting'][w]
+
+    workers = ['Bosun', 'Dayman EU', 'Dayman PH1', 'Dayman PH2',
+               'Watchman 1', 'Watchman 2', 'Watchman 3']
     wb, report = build_workbook_and_report(all_days, len(days_data), workers)
     return wb, all_days, report

@@ -28,3 +28,16 @@ Projektin STCW-tarkistus (`check_stcw_at_slot` / `analyze_stcw_from_work_starts`
 - vähintään yksi lepojakso vähintään **6 h**
 
 Näille löytyy nyt erilliset marker-pohjaiset testit.
+
+
+## Kokeellinen constrained-optimointi (Vaihe 1)
+
+Streamlitissä on valinta **"Kokeellinen constrained-optimointi (daymanit)"** sivupalkissa.
+
+Tämä vaatii OR-Toolsin:
+
+```bash
+pip install ortools
+```
+
+Ilman sitä sovellus näyttää virheilmoituksen constrained-tilaa käytettäessä.
