@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
 """
+Created on Tue Feb 17 10:49:16 2026
+
+@author: OMISTAJA
+"""
+
+# -*- coding: utf-8 -*-
+"""
 STCW-yhteensopiva työvuorogeneraattori
 Versio 14: Käyttäjän määrittelemä pisteytys
 
@@ -274,6 +281,31 @@ def score_slot(slot, dayman, dayman_work, all_dayman_work, prev_day_work,
             distance_to_departure = abs(slot - departure_start)
             if distance_to_departure <= 4:  # Alle 2h
                 score += 200
+                
+    if prev_day_work:
+    # Etsi milloin edellisen päivän työ loppui
+        last_work_slot = -1
+        for i in range(47, -1, -1):
+            if prev_day_work[i]:
+                last_work_slot = i
+                break
+        
+        if last_work_slot >= 0:
+           # Jos edellinen päivä loppui slottiin 46-47 JA tämä on slotti 0-3,
+           # työ jatkuu keskiyön yli - ei tarkisteta lepoaikaa
+           if last_work_slot >= 46 and slot <= 3:
+               pass  # Salli jatkuva vuoro keskiyön yli
+           else:
+               # Laske lepoaika: (48 - last_work_slot - 1) + slot
+               rest_slots = (48 - last_work_slot - 1) + slot
+               rest_hours = rest_slots / 2
+           
+               if rest_hours < 6:
+                   score -= 20000  # Liian vähän lepoa - iso miinus
+               elif rest_hours < 8:
+                   score -= 500    # Alle 8h lepoa - pieni miinus
+    
+
     
     return score
 
@@ -410,7 +442,7 @@ def generate_schedule(days_data):
         for dayman in daymen:
             add_slots(arrival_start, arrival_end, all_dayman_work[dayman], all_dayman_arr[dayman])
         
-        # VAIHE 2: Lähdöt kahdelle daymanille
+        # VAIHE 2: Lähdöt kaikille daymaneille
         if departure_start is not None:
             departure_scores = {}
             for dayman in daymen:
@@ -525,7 +557,7 @@ def generate_schedule(days_data):
             best_dayman = max(scores, key=scores.get)
             best_score = scores[best_dayman]
             
-            if best_score > -1000:
+            if best_score > 0:
                 all_dayman_work[best_dayman][slot] = True
                 all_dayman_ops[best_dayman][slot] = True
         
@@ -593,7 +625,24 @@ def generate_schedule(days_data):
                     current_hours = sum(all_dayman_work[dayman]) / 2
                 else:
                     break
-        
+        # VAIHE 5b: Pakota minimi 8h (vain 08-17 väliltä)
+        for dayman in daymen:
+            current_hours = sum(all_dayman_work[dayman]) / 2
+    
+            if current_hours < MIN_HOURS:
+        # Lisää slotteja 08-17 väliltä kunnes 8h
+                for slot in range(NORMAL_START, NORMAL_END):
+                    if current_hours >= MIN_HOURS:
+                        break
+                    if all_dayman_work[dayman][slot]:
+                        continue
+                    if LUNCH_START <= slot < LUNCH_END:
+                        continue
+            
+                    all_dayman_work[dayman][slot] = True
+                    if op_start <= slot < min(op_end, 48):
+                        all_dayman_ops[dayman][slot] = True
+                    current_hours = sum(all_dayman_work[dayman]) / 2
     
         
         # VAIHE 6: Täytä aukot uudelleen
@@ -740,6 +789,12 @@ def generate_schedule(days_data):
                     elif dep[col]:
                         cell.fill = BLUE
                         cell.value = "L"
+                    elif sluice[col]:
+                        cell.fill = PURPLE
+                        cell.value = "SL"
+                    elif shifting[col]:
+                        cell.fill = PINK
+                        cell.value = "SH"
                     elif ops[col]:
                         cell.fill = YELLOW
                         cell.value = "S"
