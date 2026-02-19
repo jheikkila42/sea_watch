@@ -4,14 +4,11 @@ import io
 import pandas as pd
 import streamlit as st
 
-import sea_watch_10 as sw
-
-build_workbook_and_report = sw.build_workbook_and_report
-check_stcw_at_slot = sw.check_stcw_at_slot
-generate_schedule = sw.generate_schedule
-generate_schedule_with_manual_day1 = sw.generate_schedule_with_manual_day1
-generate_schedule_constrained_daymen = getattr(
-    sw, "generate_schedule_constrained_daymen", sw.generate_schedule
+from sea_watch_10 import (
+    build_workbook_and_report,
+    check_stcw_at_slot,
+    generate_schedule,
+    generate_schedule_with_manual_day1,
 )
 
 WORKERS = [
@@ -290,10 +287,6 @@ def main():
         "Päivien määrä", min_value=1, max_value=14, value=2, step=1
     )
     st.sidebar.info("Vinkki: jätä kenttä tyhjäksi jos kyseistä tapahtumaa ei ole.")
-    use_constrained = st.sidebar.checkbox(
-        "Rajoiteohjelmointi päälle",
-        value=False,
-    )
 
     tab_auto, tab_manual = st.tabs(["Automaattinen syöttö", "Päivä 1 manuaalinen"])
 
@@ -302,14 +295,8 @@ def main():
         days_data = build_days_data(1, num_days, key_prefix="auto")
 
         if st.button("🚀 Generoi työvuorot", key="gen_auto"):
-            try:
-                if use_constrained:
-                    wb, all_days, _ = generate_schedule_constrained_daymen(days_data)
-                else:
-                    wb, all_days, _ = generate_schedule(days_data)
-                store_generated_result(wb, all_days, num_days)
-            except RuntimeError as e:
-                st.error(str(e))
+            wb, all_days, _ = generate_schedule(days_data)
+            store_generated_result(wb, all_days, num_days)
 
     with tab_manual:
         st.markdown(
