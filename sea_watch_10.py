@@ -250,7 +250,7 @@ def _parse_day_time_indices(info):
     }
 
 
-def _solve_daymen_constrained(info):
+def _solve_daymen_constrained(info, prev_day_work=None):
     try:
         from ortools.sat.python import cp_model
     except Exception as exc:
@@ -271,6 +271,8 @@ def _solve_daymen_constrained(info):
 
     daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
     slots = range(48)
+    if prev_day_work is None:
+        prev_day_work = {w: [False] * 48 for w in daymen}
 
     arrival_slots = list(range(max(0, arrival_start), min(arrival_end, 48))) if arrival_start is not None else []
     departure_slots = list(range(max(0, departure_start), min(departure_end, 48))) if departure_start is not None else []
@@ -328,7 +330,15 @@ def _solve_daymen_constrained(info):
 
     op_slots = [s for s in slots if is_during_op_slot(s, op_start, op_end)]
     op_cov = sum(x[(w, s)] for w in daymen for s in op_slots)
-    model.Maximize(100 * op_cov - 6 * sum(change_vars))
+
+    early_slots = range(NORMAL_START, time_to_index(10, 0))
+    early_after_night_penalty = []
+    for w in daymen:
+        worked_late = any(prev_day_work.get(w, [False] * 48)[s] for s in range(time_to_index(22, 0), 48))
+        if worked_late:
+            early_after_night_penalty.append(sum(x[(w, s)] for s in early_slots))
+
+    model.Maximize(100 * op_cov - 20 * sum(change_vars) - 30 * sum(early_after_night_penalty))
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = 3.0
@@ -518,6 +528,51 @@ def get_work_ranges(work):
 # ============================================================================
 # PÄÄFUNKTIO
 # ============================================================================
+
+def _enforce_departure_lock(daymen, all_dayman_work, all_dayman_dep, departure_start, departure_end):
+    if departure_start is None:
+        return
+    for slot in range(max(0, departure_start), min(departure_end, 48)):
+        chosen = [dm for dm in daymen if all_dayman_dep[dm][slot]]
+        if len(chosen) < 2:
+            extras = [dm for dm in daymen if dm not in chosen]
+            extras.sort(key=lambda dm: sum(all_dayman_work[dm]))
+            chosen.extend(extras[: 2 - len(chosen)])
+        elif len(chosen) > 2:
+            chosen = sorted(chosen, key=lambda dm: sum(all_dayman_work[dm]))[:2]
+
+        chosen_set = set(chosen[:2])
+        for dm in daymen:
+            all_dayman_work[dm][slot] = dm in chosen_set
+            all_dayman_dep[dm][slot] = dm in chosen_set
+
+
+def _trim_redundant_short_segments(daymen, all_dayman_work, mandatory_slots):
+    for dm in daymen:
+        slots = all_dayman_work[dm]
+        i = 0
+        while i < 48:
+            if slots[i]:
+                start = i
+                while i < 48 and slots[i]:
+                    i += 1
+                end = i
+                length = end - start
+                segment = range(start, end)
+                if length <= 2:
+                    if any(s in mandatory_slots for s in segment):
+                        continue
+                    if any(s < NORMAL_START or s >= NORMAL_END for s in segment):
+                        continue
+                    if any(sum(all_dayman_work[other][s] for other in daymen if other != dm) == 0 for s in segment):
+                        continue
+                    if (sum(slots) - length) / 2 < MIN_HOURS:
+                        continue
+                    for s in segment:
+                        slots[s] = False
+            else:
+                i += 1
+
 
 def generate_schedule(days_data):
     workers = ['Bosun', 'Dayman EU', 'Dayman PH1', 'Dayman PH2',
@@ -851,6 +906,8 @@ def generate_schedule(days_data):
                 else:
                     i += 1
         
+        _enforce_departure_lock(daymen, all_dayman_work, all_dayman_dep, departure_start, departure_end)
+
         # Tallenna
         # Varmistus: erikoisoperaatioiden pakolliset läsnäolot pysyvät aina lopputuloksessa.
         for slot in first_hour_slots:
@@ -1169,7 +1226,8 @@ def generate_schedule_constrained_daymen(days_data):
     daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
 
     for d, info in enumerate(days_data):
-        solved = _solve_daymen_constrained(info)
+        prev_day = {w: (all_days[w][d - 1]['work_slots'] if d > 0 else [False] * 48) for w in daymen}
+        solved = _solve_daymen_constrained(info, prev_day_work=prev_day)
         for w in daymen:
             all_days[w][d]['work_slots'] = solved['work'][w]
             all_days[w][d]['arrival_slots'] = solved['arrival'][w]
@@ -1177,6 +1235,21 @@ def generate_schedule_constrained_daymen(days_data):
             all_days[w][d]['port_op_slots'] = solved['ops'][w]
             all_days[w][d]['sluice_slots'] = solved['sluice'][w]
             all_days[w][d]['shifting_slots'] = solved['shifting'][w]
+
+        dep_slots = [i for i, v in enumerate(all_days[daymen[0]][d]['departure_slots']) if v]
+        dep_start = dep_slots[0] if dep_slots else None
+        dep_end = dep_start + 2 if dep_start is not None else None
+        all_work = {w: all_days[w][d]['work_slots'] for w in daymen}
+        all_dep = {w: all_days[w][d]['departure_slots'] for w in daymen}
+        _enforce_departure_lock(daymen, all_work, all_dep, dep_start, dep_end)
+
+        mandatory = set()
+        for w in daymen:
+            mandatory.update(i for i, v in enumerate(all_days[w][d]['arrival_slots']) if v)
+            mandatory.update(i for i, v in enumerate(all_days[w][d]['departure_slots']) if v)
+            mandatory.update(i for i, v in enumerate(all_days[w][d].get('sluice_slots', [])) if v)
+            mandatory.update(i for i, v in enumerate(all_days[w][d].get('shifting_slots', [])) if v)
+        _trim_redundant_short_segments(daymen, all_work, mandatory)
 
     workers = ['Bosun', 'Dayman EU', 'Dayman PH1', 'Dayman PH2',
                'Watchman 1', 'Watchman 2', 'Watchman 3']
