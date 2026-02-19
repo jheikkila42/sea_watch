@@ -231,10 +231,10 @@ def score_slot(slot, dayman, dayman_work, all_dayman_work, prev_day_work,
     # Aloita pistelasku
     score = 0
     
-    # -2000: STCW-rike
+    # STCW-rike: estä valinta käytännössä kokonaan
     would_violate, _ = would_cause_stcw_violation(slot, dayman_work, prev_day_work)
     if would_violate:
-        score -= 2000
+        return -10000
     
     # Laske 08-17 ulkopuoliset tunnit (slotit)
     outside_normal_slots = sum(1 for i in range(48)
@@ -537,13 +537,7 @@ def generate_schedule(days_data):
                     all_dayman_work[dayman][slot] = True
                     all_dayman_shifting[dayman][slot] = True
 
-        # VAIHE 3: Jaa OP-slotit pisteytyksellä
-        op_slots = []
-        for slot in range(max(0, op_start), min(op_end, 48)):
-            if slot != LUNCH_START:
-                op_slots.append(slot)
-        
-        for slot in op_slots:
+        def assign_best_dayman(slot):
             # Jatkuvuussääntö: jos ollaan 08-17 ulkopuolella ja OP käynnissä,
             # jatketaan samaa yövuorolaista kuin edellisessä slotissa aina kun mahdollista.
             is_outside_normal = slot < NORMAL_START or slot >= NORMAL_END
@@ -558,8 +552,9 @@ def generate_schedule(days_data):
                     )
                     if carry_score > -10000:
                         all_dayman_work[carry_dm][slot] = True
-                        all_dayman_ops[carry_dm][slot] = True
-                        continue
+                        if op_start <= slot < min(op_end, 48):
+                            all_dayman_ops[carry_dm][slot] = True
+                        return
 
             scores = {}
             for dayman in daymen:
@@ -578,9 +573,42 @@ def generate_schedule(days_data):
             
             if best_score > 0:
                 all_dayman_work[best_dayman][slot] = True
-                all_dayman_ops[best_dayman][slot] = True
-        
-        # VAIHE 4: Täytä aukot (max 2h)
+                if op_start <= slot < min(op_end, 48):
+                    all_dayman_ops[best_dayman][slot] = True
+
+        mandatory_slots = set()
+        for dm in daymen:
+            for i in range(48):
+                if (all_dayman_arr[dm][i] or all_dayman_dep[dm][i] or
+                        all_dayman_sluice[dm][i] or all_dayman_shifting[dm][i]):
+                    mandatory_slots.add(i)
+
+        # VAIHE 3: Täytä satamaop-slotit ensin 08-17 ulkopuolelta
+        outside_op_slots = []
+        for slot in range(max(0, op_start), min(op_end, 48)):
+            if slot == LUNCH_START:
+                continue
+            if slot < NORMAL_START or slot >= NORMAL_END:
+                outside_op_slots.append(slot)
+
+        for slot in outside_op_slots:
+            assign_best_dayman(slot)
+
+        # VAIHE 4: Täytä muut satamaop-slotit (esim. 08-17 sisällä)
+        other_slots = []
+        for slot in range(max(0, op_start), min(op_end, 48)):
+            if slot == LUNCH_START:
+                continue
+            if slot in mandatory_slots:
+                continue
+            if slot in outside_op_slots:
+                continue
+            other_slots.append(slot)
+
+        for slot in other_slots:
+            assign_best_dayman(slot)
+
+        # VAIHE 5: Täytä aukot (max 2h)
         for dayman in daymen:
             i = 0
             while i < 48:
@@ -608,8 +636,7 @@ def generate_schedule(days_data):
                 else:
                     i += 1
         
-        # VAIHE 5: Varmista minimi 8h
-            # VAIHE 5: Varmista minimi 8h
+        # VAIHE 6: Varmista minimi 8h
         for dayman in daymen:
             current_hours = sum(all_dayman_work[dayman]) / 2
     
@@ -664,7 +691,7 @@ def generate_schedule(days_data):
                     current_hours = sum(all_dayman_work[dayman]) / 2
     
         
-        # VAIHE 6: Täytä aukot uudelleen
+        # VAIHE 7: Täytä aukot uudelleen
         for dayman in daymen:
             i = 0
             while i < 48:
