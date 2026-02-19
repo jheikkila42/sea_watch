@@ -291,7 +291,7 @@ def main():
     )
     st.sidebar.info("Vinkki: jätä kenttä tyhjäksi jos kyseistä tapahtumaa ei ole.")
     use_constrained = st.sidebar.checkbox(
-        "Kokeellinen constrained-optimointi (daymanit)",
+        "Rajoiteohjelmointi päälle",
         value=False,
     )
 
