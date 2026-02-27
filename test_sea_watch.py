@@ -5,7 +5,8 @@ from sea_watch_10 import (
     generate_schedule,
     analyze_stcw_from_work_starts,
     time_to_index,
-    index_to_time_str
+    index_to_time_str,
+    _trim_redundant_short_segments
 )
 
 
@@ -486,3 +487,56 @@ class TestDailyMinimumHours:
             for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
                 hours = sum(all_days[w][day_idx]['work_slots']) / 2
                 assert hours >= 8, f"{w} päivä {day_idx+1}: {hours}h (min 8h)"
+
+
+class TestShortSegmentCleanup:
+    """Lyhyet tarpeettomat työpätkät poistetaan, jos kattavuus säilyy."""
+
+    def test_removes_redundant_single_slot_when_covered_by_others(self):
+        daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+        all_dayman_work = {dm: [False] * 48 for dm in daymen}
+        all_dayman_ops = {dm: [False] * 48 for dm in daymen}
+
+        # Dayman EU: riittävästi tunteja + yksi irrallinen 30 min pätkä klo 12:00
+        for slot in list(range(4, 16)) + [24] + list(range(30, 35)):
+            all_dayman_work['Dayman EU'][slot] = True
+            all_dayman_ops['Dayman EU'][slot] = True
+
+        # Muut daymanit kattavat irrallisen slotin
+        all_dayman_work['Dayman PH1'][24] = True
+        all_dayman_work['Dayman PH2'][24] = True
+
+        _trim_redundant_short_segments(
+            daymen,
+            all_dayman_work,
+            all_dayman_ops,
+            mandatory_slots=set(),
+            op_start=16,
+            op_end=34,
+        )
+
+        assert all_dayman_work['Dayman EU'][24] is False
+        assert all_dayman_ops['Dayman EU'][24] is False
+
+    def test_keeps_short_slot_if_it_would_break_minimum_hours(self):
+        daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+        all_dayman_work = {dm: [False] * 48 for dm in daymen}
+        all_dayman_ops = {dm: [False] * 48 for dm in daymen}
+
+        # Täsmälleen 8h (16 slottia), joista yksi on lyhyt irrallinen slotti
+        for slot in list(range(4, 12)) + list(range(14, 21)) + [24]:
+            all_dayman_work['Dayman EU'][slot] = True
+            all_dayman_ops['Dayman EU'][slot] = True
+
+        all_dayman_work['Dayman PH1'][24] = True
+
+        _trim_redundant_short_segments(
+            daymen,
+            all_dayman_work,
+            all_dayman_ops,
+            mandatory_slots=set(),
+            op_start=16,
+            op_end=34,
+        )
+
+        assert all_dayman_work['Dayman EU'][24] is True

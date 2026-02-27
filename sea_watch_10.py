@@ -42,6 +42,7 @@ LUNCH_END = 24      # 12:00
 MIN_HOURS = 8
 MAX_HOURS = 10
 MAX_OUTSIDE_NORMAL_SLOTS = 12  # 6h = 12 slottia
+SHORT_SEGMENT_MAX_SLOTS = 2  # 1h tai lyhyempi pätkä pyritään poistamaan
 
 
 def time_to_index(h, m):
@@ -359,6 +360,54 @@ def _enforce_departure_lock(daymen, all_dayman_work, all_dayman_dep, departure_s
             all_dayman_work[dm][slot] = dm in chosen_set
             all_dayman_dep[dm][slot] = dm in chosen_set
 
+
+
+
+def _trim_redundant_short_segments(daymen, all_dayman_work, all_dayman_ops, mandatory_slots,
+                                   op_start, op_end, short_segment_max_slots=SHORT_SEGMENT_MAX_SLOTS):
+    """Poistaa tarpeettomat lyhyet työpätkät (esim. 30-60 min), jos kattavuus säilyy.
+
+    Segmentti poistetaan vain jos:
+      - segmentissä ei ole pakollisia slotteja (tulo/lähtö/slussi/shiftaus)
+      - jokaisessa segmentin slotissa on vähintään yksi muu dayman töissä
+      - poistamisen jälkeen daymanilla on edelleen vähintään MIN_HOURS
+    """
+    for dayman in daymen:
+        work = all_dayman_work[dayman]
+        segments = []
+        seg_start = None
+        for slot, is_work in enumerate(work):
+            if is_work and seg_start is None:
+                seg_start = slot
+            elif not is_work and seg_start is not None:
+                segments.append((seg_start, slot))
+                seg_start = None
+        if seg_start is not None:
+            segments.append((seg_start, 48))
+
+        for start, end in segments:
+            seg_len = end - start
+            if seg_len == 0 or seg_len > short_segment_max_slots:
+                continue
+
+            seg_slots = list(range(start, end))
+            if any(slot in mandatory_slots for slot in seg_slots):
+                continue
+
+            if (sum(work) - seg_len) / 2 < MIN_HOURS:
+                continue
+
+            has_coverage = all(
+                any(other != dayman and all_dayman_work[other][slot] for other in daymen)
+                for slot in seg_slots
+            )
+            if not has_coverage:
+                continue
+
+            for slot in seg_slots:
+                all_dayman_work[dayman][slot] = False
+                if op_start <= slot < min(op_end, 48):
+                    all_dayman_ops[dayman][slot] = False
 
 def generate_schedule(days_data):
     workers = ['Bosun', 'Dayman EU', 'Dayman PH1', 'Dayman PH2',
@@ -719,6 +768,16 @@ def generate_schedule(days_data):
                 else:
                     i += 1
         
+        # VAIHE 8: Siisti lyhyet tarpeettomat työpätkät (esim. 30-60 min)
+        _trim_redundant_short_segments(
+            daymen,
+            all_dayman_work,
+            all_dayman_ops,
+            mandatory_slots,
+            op_start,
+            op_end,
+        )
+
         _enforce_departure_lock(daymen, all_dayman_work, all_dayman_dep, departure_start, departure_end)
 
         # Tallenna
