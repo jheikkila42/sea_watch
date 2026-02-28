@@ -43,9 +43,6 @@ MIN_HOURS = 8
 MAX_HOURS = 10
 MAX_OUTSIDE_NORMAL_SLOTS = 12  # 6h = 12 slottia
 SHORT_SEGMENT_MAX_SLOTS = 2  # 1h tai lyhyempi pätkä pyritään poistamaan
-DAY_OVERLAP_PENALTY = 300
-UNFILLED_OUTSIDE_OP_BONUS = 1500
-UNFILLED_OUTSIDE_OP_DAY_PENALTY = 300
 
 
 def time_to_index(h, m):
@@ -265,8 +262,6 @@ def score_slot(slot, dayman, dayman_work, all_dayman_work, prev_day_work,
         else:
             # +5000: Slotti 08-17 ulkopuolella, ei vielä työntekijää, JA cargo op käynnissä
             score += 5000
-            if uncovered_outside_ops is not None and slot in uncovered_outside_ops:
-                score += UNFILLED_OUTSIDE_OP_BONUS
     else:
         # +50: Slotti 08-17 välillä
         score += 50
@@ -422,25 +417,6 @@ def _trim_redundant_short_segments(daymen, all_dayman_work, all_dayman_ops, mand
                     all_dayman_ops[dayman][slot] = False
 
 
-
-def _enforce_single_outside_worker_slots(daymen, all_dayman_work, all_dayman_ops, mandatory_slots, op_start, op_end):
-    """Varmistaa että 08-17 ulkopuolisessa OP-slotissa on korkeintaan yksi dayman (ei pakollisissa sloteissa)."""
-    for slot in range(max(0, op_start), min(op_end, 48)):
-        if NORMAL_START <= slot < NORMAL_END:
-            continue
-        if slot in mandatory_slots:
-            continue
-
-        working = [dm for dm in daymen if all_dayman_work[dm][slot]]
-        if len(working) <= 1:
-            continue
-
-        keep = min(working, key=lambda dm: sum(all_dayman_work[dm]))
-        for dm in working:
-            if dm == keep:
-                continue
-            all_dayman_work[dm][slot] = False
-            all_dayman_ops[dm][slot] = False
 
 def generate_schedule(days_data):
     workers = ['Bosun', 'Dayman EU', 'Dayman PH1', 'Dayman PH2',
@@ -619,23 +595,7 @@ def generate_schedule(days_data):
                     all_dayman_work[dayman][slot] = True
                     all_dayman_shifting[dayman][slot] = True
 
-        op_slots = [
-            slot for slot in range(max(0, op_start), min(op_end, 48))
-            if slot != LUNCH_START
-        ]
-
-        mandatory_slots = set()
-        for dm in daymen:
-            for i in range(48):
-                if (all_dayman_arr[dm][i] or all_dayman_dep[dm][i] or
-                        all_dayman_sluice[dm][i] or all_dayman_shifting[dm][i]):
-                    mandatory_slots.add(i)
-
-        outside_op_slots = [slot for slot in op_slots if slot < NORMAL_START or slot >= NORMAL_END]
-        other_slots = [slot for slot in op_slots if slot not in mandatory_slots and slot not in outside_op_slots]
-        uncovered_outside_ops = set()
-
-        def assign_best_dayman(slot, uncovered_ops=None):
+        def assign_best_dayman(slot):
             # Jatkuvuussääntö: jos ollaan 08-17 ulkopuolella ja OP käynnissä,
             # jatketaan samaa yövuorolaista kuin edellisessä slotissa aina kun mahdollista.
             is_outside_normal = slot < NORMAL_START or slot >= NORMAL_END
@@ -646,14 +606,13 @@ def generate_schedule(days_data):
                     carry_score = score_slot(
                         slot, carry_dm, all_dayman_work[carry_dm], all_dayman_work,
                         prev_day_work[carry_dm], daymen,
-                        arrival_start, arrival_end, departure_start, departure_end, op_start, op_end,
-                        uncovered_ops
+                        arrival_start, arrival_end, departure_start, departure_end, op_start, op_end
                     )
                     if carry_score > -10000:
                         all_dayman_work[carry_dm][slot] = True
                         if op_start <= slot < min(op_end, 48):
                             all_dayman_ops[carry_dm][slot] = True
-                        return True
+                        return
 
             scores = {}
             for dayman in daymen:
@@ -675,73 +634,38 @@ def generate_schedule(days_data):
                 all_dayman_work[best_dayman][slot] = True
                 if op_start <= slot < min(op_end, 48):
                     all_dayman_ops[best_dayman][slot] = True
-                return True
-            return False
 
-        # VAIHE 3: Täytä satamaop-slotit ensin 08-17 ulkopuolelta.
+        mandatory_slots = set()
+        for dm in daymen:
+            for i in range(48):
+                if (all_dayman_arr[dm][i] or all_dayman_dep[dm][i] or
+                        all_dayman_sluice[dm][i] or all_dayman_shifting[dm][i]):
+                    mandatory_slots.add(i)
+
+        # VAIHE 3: Täytä satamaop-slotit ensin 08-17 ulkopuolelta
+        outside_op_slots = []
+        for slot in range(max(0, op_start), min(op_end, 48)):
+            if slot == LUNCH_START:
+                continue
+            if slot < NORMAL_START or slot >= NORMAL_END:
+                outside_op_slots.append(slot)
+
         for slot in outside_op_slots:
-            if not assign_best_dayman(slot, uncovered_outside_ops):
-                uncovered_outside_ops.add(slot)
+            assign_best_dayman(slot)
 
-        # VAIHE 4: Täytä muut satamaop-slotit (08-17 sisällä)
+        # VAIHE 4: Täytä muut satamaop-slotit (esim. 08-17 sisällä)
+        other_slots = []
+        for slot in range(max(0, op_start), min(op_end, 48)):
+            if slot == LUNCH_START:
+                continue
+            if slot in mandatory_slots:
+                continue
+            if slot in outside_op_slots:
+                continue
+            other_slots.append(slot)
+
         for slot in other_slots:
-            assign_best_dayman(slot, uncovered_outside_ops)
-
-        # VAIHE 4.5: Korjauspassi kattamattomille yö/ilta OP-sloteille
-        for slot in sorted(list(uncovered_outside_ops)):
-            if any(all_dayman_work[dm][slot] for dm in daymen):
-                uncovered_outside_ops.discard(slot)
-                continue
-
-            if assign_best_dayman(slot, uncovered_outside_ops):
-                uncovered_outside_ops.discard(slot)
-                continue
-
-            # Yritä paikallista swapia: siirrä daymanin ei-pakollinen päivä-OP slotti tähän.
-            for dayman in daymen:
-                current_work = all_dayman_work[dayman]
-                if score_slot(
-                    slot, dayman, current_work, all_dayman_work,
-                    prev_day_work[dayman], daymen,
-                    arrival_start, arrival_end, departure_start, departure_end, op_start, op_end,
-                    uncovered_outside_ops
-                ) <= -10000:
-                    continue
-
-                drop_candidates = [
-                    s for s in other_slots
-                    if current_work[s]
-                    and s not in mandatory_slots
-                    and any(other != dayman and all_dayman_work[other][s] for other in daymen)
-                ]
-
-                for drop_slot in drop_candidates:
-                    trial = current_work[:]
-                    trial[drop_slot] = False
-                    trial[slot] = True
-
-                    if count_work_periods(trial) > 3:
-                        continue
-                    if (sum(trial) / 2) < MIN_HOURS:
-                        continue
-                    if any(other != dayman and all_dayman_work[other][slot] for other in daymen):
-                        continue
-
-                    stcw = check_stcw_at_slot(prev_day_work[dayman] + trial, 48 + slot)
-                    if stcw['status'] != 'OK':
-                        continue
-
-                    all_dayman_work[dayman][drop_slot] = False
-                    all_dayman_work[dayman][slot] = True
-                    if op_start <= drop_slot < min(op_end, 48):
-                        all_dayman_ops[dayman][drop_slot] = False
-                    if op_start <= slot < min(op_end, 48):
-                        all_dayman_ops[dayman][slot] = True
-                    uncovered_outside_ops.discard(slot)
-                    break
-
-                if slot not in uncovered_outside_ops:
-                    break
+            assign_best_dayman(slot)
 
         # VAIHE 5: Täytä aukot (max 2h)
         for dayman in daymen:
@@ -776,55 +700,12 @@ def generate_schedule(days_data):
         # VAIHE 6: Varmista minimi 8h
         for dayman in daymen:
             current_hours = sum(all_dayman_work[dayman]) / 2
-    
+
             while current_hours < MIN_HOURS:
                 best_slot = None
                 best_score = -99999
 
-                priority_groups = [
-                    [s for s in sorted(uncovered_outside_ops) if s in op_slots],
-                    [s for s in op_slots if s not in mandatory_slots],
-                    [s for s in range(NORMAL_START, NORMAL_END)],
-                ]
-
-                for candidates in priority_groups:
-                    for slot in candidates:
-                        if all_dayman_work[dayman][slot]:
-                            continue
-                        if LUNCH_START <= slot < LUNCH_END:
-                            continue
-                        forced_daymen = sluice_two_dayman_slots.get(slot)
-                        if forced_daymen is not None and dayman not in forced_daymen:
-                            continue
-
-                        score = score_slot(
-                            slot, dayman, all_dayman_work[dayman], all_dayman_work,
-                            prev_day_work[dayman], daymen,
-                            arrival_start, arrival_end, departure_start, departure_end, op_start, op_end,
-                            uncovered_outside_ops
-                        )
-
-                        if score > best_score:
-                            best_score = score
-                            best_slot = slot
-
-                    if best_slot is not None:
-                        break
-
-                if best_slot is not None:
-                    all_dayman_work[dayman][best_slot] = True
-                    if op_start <= best_slot < min(op_end, 48):
-                        all_dayman_ops[dayman][best_slot] = True
-                    uncovered_outside_ops.discard(best_slot)
-                    current_hours = sum(all_dayman_work[dayman]) / 2
-                else:
-                    break
-        # VAIHE 5b: Pakota minimi 8h (vain 08-17 väliltä)
-        for dayman in daymen:
-            current_hours = sum(all_dayman_work[dayman]) / 2
-    
-            if current_hours < MIN_HOURS:
-        # Lisää slotteja 08-17 väliltä kunnes 8h
+        # Etsi vain 08-17 väliltä
                 for slot in range(NORMAL_START, NORMAL_END):
                     if current_hours >= MIN_HOURS:
                         break
@@ -832,10 +713,24 @@ def generate_schedule(days_data):
                         continue
                     if LUNCH_START <= slot < LUNCH_END:
                         continue
-            
-                    all_dayman_work[dayman][slot] = True
-                    if op_start <= slot < min(op_end, 48):
-                        all_dayman_ops[dayman][slot] = True
+                    forced_daymen = sluice_two_dayman_slots.get(slot)
+                    if forced_daymen is not None and dayman not in forced_daymen:
+                        continue
+
+                    score = score_slot(
+                        slot, dayman, all_dayman_work[dayman], all_dayman_work,
+                        prev_day_work[dayman], daymen,
+                        arrival_start, arrival_end, departure_start, departure_end, op_start, op_end
+                    )
+
+                    if score > best_score:
+                        best_score = score
+                        best_slot = slot
+
+                if best_slot is not None:
+                    all_dayman_work[dayman][best_slot] = True
+                    if op_start <= best_slot < min(op_end, 48):
+                        all_dayman_ops[dayman][best_slot] = True
                     current_hours = sum(all_dayman_work[dayman]) / 2
     
         
@@ -879,14 +774,6 @@ def generate_schedule(days_data):
             op_end,
         )
 
-        _enforce_single_outside_worker_slots(
-            daymen,
-            all_dayman_work,
-            all_dayman_ops,
-            mandatory_slots,
-            op_start,
-            op_end,
-        )
 
         _enforce_departure_lock(daymen, all_dayman_work, all_dayman_dep, departure_start, departure_end)
 
