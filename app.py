@@ -36,7 +36,7 @@ def parse_time(time_str: str):
         h, m = int(normalized), 0
 
     if not (0 <= h <= 23 and m in (0, 30)):
-        raise ValueError("Ajan pitää olla muodossa HH:MM, HH.MM tai pelkkä tunti (esim 22)")
+        raise ValueError("Ajan pitäää olla muodossa HH:MM, HH.MM tai pelkkä tunti (esim 22)")
     return h, m
 
 
