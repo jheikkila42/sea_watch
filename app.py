@@ -56,7 +56,7 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
 
             with col1:
                 arr_h, arr_m = parse_optional_time(
-                    "Satamaan tuloaika (HH:MM, tyhjä jos ei tuloa)",
+                    "Satamaan tuloaika !! (HH:MM, tyhjä jos ei tuloa)",
                     key=f"{key_prefix}_arr_{day}",
                 )
                 dep_h, dep_m = parse_optional_time(
