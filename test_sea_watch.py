@@ -2,10 +2,11 @@
 
 import pytest
 from sea_watch_10 import (
-    generate_schedule, 
+    generate_schedule,
     analyze_stcw_from_work_starts,
     time_to_index,
-    index_to_time_str
+    index_to_time_str,
+    _trim_redundant_short_segments
 )
 
 
@@ -72,7 +73,7 @@ def run_scenario(arrival_hour, departure_hour, op_start_hour, op_end_hour,
 # ---------------------------------------------------------------------
 
 class TestDaymenArrivalDeparture:
-    """Kaikki daymanit ovat aina tulossa ja lähdössä"""
+    """Kaikki daymanit ovat tulossa, lähdössä 2 daymania"""
     
     def test_all_daymen_in_arrival_basic(self):
         """Perus: kaikki daymanit tulossa"""
@@ -85,16 +86,15 @@ class TestDaymenArrivalDeparture:
             has_arrival = any(all_days[w][0]['arrival_slots'])
             assert has_arrival, f"{w} ei ole tulossa"
     
-    def test_all_daymen_in_departure_basic(self):
-        """Perus: kaikki daymanit lähdössä"""
+    def test_two_daymen_in_departure_basic(self):
+        """Perus: lähdössä on kaksi daymania"""
         all_days = run_scenario(
             arrival_hour=8, departure_hour=19,
             op_start_hour=10, op_end_hour=18
         )
-        
-        for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
-            has_departure = any(all_days[w][0]['departure_slots'])
-            assert has_departure, f"{w} ei ole lähdössä"
+
+        count = sum(any(all_days[w][0]['departure_slots']) for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2'])
+        assert count == 2, f"Lähdössä pitäisi olla 2 daymania, on {count}"
     
     def test_all_daymen_in_arrival_early_morning(self):
         """Aikainen tulo: kaikki daymanit tulossa"""
@@ -107,16 +107,15 @@ class TestDaymenArrivalDeparture:
             has_arrival = any(all_days[w][0]['arrival_slots'])
             assert has_arrival, f"{w} ei ole tulossa (aikainen tulo)"
     
-    def test_all_daymen_in_departure_late_evening(self):
-        """Myöhäinen lähtö: kaikki daymanit lähdössä"""
+    def test_two_daymen_in_departure_late_evening(self):
+        """Myöhäinen lähtö: lähdössä on kaksi daymania"""
         all_days = run_scenario(
             arrival_hour=8, departure_hour=21,
             op_start_hour=10, op_end_hour=20
         )
-        
-        for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
-            has_departure = any(all_days[w][0]['departure_slots'])
-            assert has_departure, f"{w} ei ole lähdössä (myöhäinen lähtö)"
+
+        count = sum(any(all_days[w][0]['departure_slots']) for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2'])
+        assert count == 2, f"Myöhäisessä lähdössä pitäisi olla 2 daymania, on {count}"
 
 
 
@@ -138,8 +137,8 @@ class TestEveningShifts:
             count = count_daymen_working_at(all_days, 0, hour)
             assert count <= 1, f"Klo {hour}:00 on {count} daymania töissä (max 1)"
     
-    def test_all_daymen_allowed_during_departure(self):
-        """Kaikki daymanit voivat olla töissä lähdön aikana"""
+    def test_two_daymen_during_departure(self):
+        """Lähdön aikana on kaksi daymania"""
         all_days = run_scenario(
             arrival_hour=8, departure_hour=21,
             op_start_hour=10, op_end_hour=20
@@ -147,7 +146,7 @@ class TestEveningShifts:
         
         # Lähtö klo 21 - kaikki saavat olla
         count = count_daymen_working_at(all_days, 0, 21)
-        assert count == 3, f"Lähdön aikana pitäisi olla 3 daymania, on {count}"
+        assert count == 2, f"Lähdön aikana pitäisi olla 2 daymania, on {count}"
     
     def test_evening_coverage_exists(self):
         """Iltakattavuus on olemassa kun operaatio jatkuu iltaan"""
@@ -169,6 +168,7 @@ class TestEveningShifts:
 class TestSTCW:
     """STCW-lepoaikasäännöt"""
     
+    @pytest.mark.stcw_rest
     def test_minimum_10h_rest(self):
         """Vähintään 10h lepoa 24h jaksossa"""
         all_days = run_scenario(
@@ -188,6 +188,7 @@ class TestSTCW:
             assert ana['total_rest'] >= 10, \
                 f"{w}: vain {ana['total_rest']}h lepoa (min 10h)"
     
+    @pytest.mark.stcw_split
     def test_max_two_rest_periods(self):
         """Lepo max 2 jaksossa"""
         all_days = run_scenario(
@@ -207,6 +208,7 @@ class TestSTCW:
             assert ana['rest_period_count'] <= 2, \
                 f"{w}: {ana['rest_period_count']} lepojaksoa (max 2)"
     
+    @pytest.mark.stcw_long_rest
     def test_one_rest_period_min_6h(self):
         """Yksi lepojakso vähintään 6h"""
         all_days = run_scenario(
@@ -226,6 +228,7 @@ class TestSTCW:
             assert ana['longest_rest'] >= 6, \
                 f"{w}: pisin lepo {ana['longest_rest']}h (min 6h)"
     
+    @pytest.mark.stcw_status
     def test_stcw_status_ok(self):
         """STCW-status on OK normaalissa skenaariossa"""
         all_days = run_scenario(
@@ -320,11 +323,13 @@ class TestSpecialCases:
             op_start_hour=8, op_end_hour=20
         )
         
-        # Kaikki daymanit tulossa ja lähdössä
+        # Kaikki daymanit tulossa, lähdössä kaksi daymania
         for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
             has_arr = any(all_days[w][0]['arrival_slots'])
-            has_dep = any(all_days[w][0]['departure_slots'])
-            assert has_arr and has_dep, f"{w} puuttuu tulosta/lähdöstä"
+            assert has_arr, f"{w} puuttuu tulosta"
+
+        dep_count = sum(any(all_days[w][0]['departure_slots']) for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2'])
+        assert dep_count == 2, f"Lähdössä pitäisi olla 2 daymania, on {dep_count}"
     
     def test_no_arrival_no_departure(self):
         """Ei tuloa eikä lähtöä - normaali meripäivä"""
@@ -396,3 +401,142 @@ class TestRegressions:
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+@pytest.mark.special_ops
+class TestSpecialOperationsMandatory:
+    """Slussi ja shiftaus ovat pakollisia kuten tulo/lähtö."""
+
+    def test_sluice_arrival_at_17_is_forced_for_daymen(self):
+        days_data = [
+            {
+                'arrival_hour': None,
+                'arrival_minute': 0,
+                'departure_hour': None,
+                'departure_minute': 0,
+                'port_op_start_hour': 8,
+                'port_op_start_minute': 0,
+                'port_op_end_hour': 17,
+                'port_op_end_minute': 0,
+                'sluice_arrival_hour': 17,
+                'sluice_arrival_minute': 0,
+                'sluice_departure_hour': None,
+                'sluice_departure_minute': 0,
+                'shifting_hour': None,
+                'shifting_minute': 0,
+            }
+        ]
+
+        _, all_days, _ = generate_schedule(days_data)
+        daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+
+        # 17:00-18:00 => 2 daymania
+        for slot in [34, 35]:
+            working = sum(all_days[w][0]['work_slots'][slot] for w in daymen)
+            marked = sum(all_days[w][0]['sluice_slots'][slot] for w in daymen)
+            assert working == 2
+            assert marked == 2
+
+        # 18:00-19:00 => 3 daymania
+        for slot in [36, 37]:
+            working = sum(all_days[w][0]['work_slots'][slot] for w in daymen)
+            marked = sum(all_days[w][0]['sluice_slots'][slot] for w in daymen)
+            assert working == 3
+            assert marked == 3
+
+    def test_shifting_is_forced_for_all_daymen(self):
+        days_data = [
+            {
+                'arrival_hour': None,
+                'arrival_minute': 0,
+                'departure_hour': None,
+                'departure_minute': 0,
+                'port_op_start_hour': 8,
+                'port_op_start_minute': 0,
+                'port_op_end_hour': 17,
+                'port_op_end_minute': 0,
+                'sluice_arrival_hour': None,
+                'sluice_arrival_minute': 0,
+                'sluice_departure_hour': None,
+                'sluice_departure_minute': 0,
+                'shifting_hour': 17,
+                'shifting_minute': 0,
+            }
+        ]
+
+        _, all_days, _ = generate_schedule(days_data)
+        daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+
+        for slot in [34, 35]:
+            working = sum(all_days[w][0]['work_slots'][slot] for w in daymen)
+            marked = sum(all_days[w][0]['shifting_slots'][slot] for w in daymen)
+            assert working == 3
+            assert marked == 3
+
+
+@pytest.mark.daily_hours
+class TestDailyMinimumHours:
+    """Kalenterivuorokaudessa vähintään 8h töitä daymaneille."""
+
+    def test_daymen_have_minimum_8h_per_calendar_day(self):
+        all_days = run_scenario(
+            arrival_hour=8, departure_hour=19,
+            op_start_hour=10, op_end_hour=18
+        )
+
+        for day_idx in range(2):
+            for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
+                hours = sum(all_days[w][day_idx]['work_slots']) / 2
+                assert hours >= 8, f"{w} päivä {day_idx+1}: {hours}h (min 8h)"
+
+
+class TestShortSegmentCleanup:
+    """Lyhyet tarpeettomat työpätkät poistetaan, jos kattavuus säilyy."""
+
+    def test_removes_redundant_single_slot_when_covered_by_others(self):
+        daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+        all_dayman_work = {dm: [False] * 48 for dm in daymen}
+        all_dayman_ops = {dm: [False] * 48 for dm in daymen}
+
+        # Dayman EU: riittävästi tunteja + yksi irrallinen 30 min pätkä klo 12:00
+        for slot in list(range(4, 16)) + [24] + list(range(30, 35)):
+            all_dayman_work['Dayman EU'][slot] = True
+            all_dayman_ops['Dayman EU'][slot] = True
+
+        # Muut daymanit kattavat irrallisen slotin
+        all_dayman_work['Dayman PH1'][24] = True
+        all_dayman_work['Dayman PH2'][24] = True
+
+        _trim_redundant_short_segments(
+            daymen,
+            all_dayman_work,
+            all_dayman_ops,
+            mandatory_slots=set(),
+            op_start=16,
+            op_end=34,
+        )
+
+        assert all_dayman_work['Dayman EU'][24] is False
+        assert all_dayman_ops['Dayman EU'][24] is False
+
+    def test_keeps_short_slot_if_it_would_break_minimum_hours(self):
+        daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+        all_dayman_work = {dm: [False] * 48 for dm in daymen}
+        all_dayman_ops = {dm: [False] * 48 for dm in daymen}
+
+        # Täsmälleen 8h (16 slottia), joista yksi on lyhyt irrallinen slotti
+        for slot in list(range(4, 12)) + list(range(14, 21)) + [24]:
+            all_dayman_work['Dayman EU'][slot] = True
+            all_dayman_ops['Dayman EU'][slot] = True
+
+        all_dayman_work['Dayman PH1'][24] = True
+
+        _trim_redundant_short_segments(
+            daymen,
+            all_dayman_work,
+            all_dayman_ops,
+            mandatory_slots=set(),
+            op_start=16,
+            op_end=34,
+        )
+
+        assert all_dayman_work['Dayman EU'][24] is True
