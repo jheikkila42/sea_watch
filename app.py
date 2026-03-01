@@ -76,7 +76,7 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
             with row1_col2:
                 st.markdown("#### Satamaoperaatiot")
                 op_s_h, op_s_m = parse_optional_time(
-                    "Satamaoperaation alku (HH:MM)",
+                    "Satamaoperaation alku ! (HH:MM)",
                     key=f"{key_prefix}_opstart_{day}",
                 )
                 op_e_h, op_e_m = parse_optional_time(
