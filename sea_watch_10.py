@@ -377,6 +377,7 @@ def generate_schedule(days_data):
         
         # 1.6: Satamaop 08-17 ULKOPUOLELLA - aina 1 dayman töissä
         # Käsitellään SLOTTI KERRALLAAN jatkuvuuden varmistamiseksi
+        # Priorisoi daymaniä jolla pidempi lepo edellisestä päivästä
         op_outside_slots = []
         for slot in range(op_start, min(op_end, 48)):
             if slot < NORMAL_START or slot >= NORMAL_END:
@@ -439,6 +440,25 @@ def generate_schedule(days_data):
                     
                     # Priorisoi vähiten tunteja tehnyttä
                     score += (MAX_HOURS - current_hours) * 10
+                    
+                    # UUSI: Priorisoi daymaniä jolla pidempi lepo edellisestä päivästä
+                    # Laske milloin edellinen työjakso loppui
+                    prev_work = prev_day_work[dm]
+                    last_work_slot = -1
+                    for s in range(47, -1, -1):
+                        if prev_work[s]:
+                            last_work_slot = s
+                            break
+                    
+                    if last_work_slot >= 0:
+                        # Lepo = nykyinen slotti (+ 48 koska eri päivä) - viimeinen työslotti
+                        rest_slots = (slot + 48) - last_work_slot
+                        rest_hours = rest_slots / 2
+                        # Bonus pitkästä levosta (max 24h eli 48 slottia)
+                        score += min(rest_hours, 24) * 5
+                    else:
+                        # Ei työtä edellisenä päivänä - täysi bonus
+                        score += 24 * 5
                     
                     if score > best_score:
                         best_score = score
@@ -595,6 +615,32 @@ def generate_schedule(days_data):
             if best_dm:
                 dm_work[best_dm][slot] = True
                 dm_ops[best_dm][slot] = True
+        
+        # 3.4: Täytä turhat aukot blokkien välissä (max 2h aukot)
+        # Tämä vähentää turhia taukoja keskellä päivää
+        for dm in daymen:
+            work = dm_work[dm]
+            blocks = get_work_blocks(work)
+            
+            for i in range(len(blocks) - 1):
+                _, block1_end = blocks[i]
+                block2_start, _ = blocks[i + 1]
+                
+                gap = block2_start - block1_end
+                
+                # Täytä max 2h (4 slottia) aukot 08-17 välillä
+                if 0 < gap <= 4 and block1_end >= NORMAL_START and block2_start <= NORMAL_END:
+                    current_hours = sum(work) / 2
+                    
+                    for s in range(block1_end, block2_start):
+                        if LUNCH_START <= s < LUNCH_END:
+                            continue
+                        if current_hours >= MAX_HOURS:
+                            break
+                        work[s] = True
+                        if op_start <= s < min(op_end, 48):
+                            dm_ops[dm][s] = True
+                        current_hours = sum(work) / 2
         
         # ====================================================================
         # VAIHE 4: TÄYTÄ AUKOT (max 1h aukot 08-17 välillä)
@@ -799,7 +845,7 @@ if __name__ == "__main__":
         }
     ]
     
-    print("Generoidaan työvuorot  (blokkipohjainen)...")
+    print("Generoidaan työvuorot (blokkipohjainen)...")
     wb, all_days, report = generate_schedule(days_data)
     
     print("\n" + "=" * 60)
