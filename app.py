@@ -6,7 +6,7 @@ import streamlit as st
 
 import sea_watch_10 as sw
 
-check_stcw_at_slot = sw.check_stcw_at_slot
+check_stcw_at_slot = getattr(sw, "check_stcw_at_slot", None)
 generate_schedule = sw.generate_schedule
 generate_schedule_with_manual_day1 = getattr(sw, "generate_schedule_with_manual_day1", None)
 build_workbook_and_report = getattr(sw, "build_workbook_and_report", None)
@@ -203,24 +203,27 @@ def render_results(num_days, wb, all_days):
         st.markdown("---")
 
     st.subheader("📊 STCW-lepoaika-analyysi")
-    stcw_data = []
-    for d in range(1, num_days):
-        for w in WORKERS:
-            prev = all_days[w][d - 1]["work_slots"]
-            work = all_days[w][d]["work_slots"]
-            ana = check_stcw_at_slot(prev + work, 95)
-            stcw_data.append(
-                {
-                    "Päivä": d + 1,
-                    "Työntekijä": w,
-                    "Työtunnit": sum(work) / 2,
-                    "Lepo (h)": ana["total_rest"],
-                    "Pisin lepo (h)": ana["longest_rest"],
-                    "Status": "✓ OK" if ana["status"] == "OK" else "⚠ VAROITUS",
-                }
-            )
+    if check_stcw_at_slot is None:
+        st.info("Käytössä oleva sea_watch_10-versio ei sisällä STCW-analyysifunktiota (check_stcw_at_slot).")
+    else:
+        stcw_data = []
+        for d in range(1, num_days):
+            for w in WORKERS:
+                prev = all_days[w][d - 1]["work_slots"]
+                work = all_days[w][d]["work_slots"]
+                ana = check_stcw_at_slot(prev + work, 95)
+                stcw_data.append(
+                    {
+                        "Päivä": d + 1,
+                        "Työntekijä": w,
+                        "Työtunnit": sum(work) / 2,
+                        "Lepo (h)": ana["total_rest"],
+                        "Pisin lepo (h)": ana["longest_rest"],
+                        "Status": "✓ OK" if ana["status"] == "OK" else "⚠ VAROITUS",
+                    }
+                )
 
-    st.dataframe(pd.DataFrame(stcw_data), use_container_width=True)
+        st.dataframe(pd.DataFrame(stcw_data), use_container_width=True)
 
     buffer = io.BytesIO()
     wb.save(buffer)

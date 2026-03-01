@@ -173,6 +173,57 @@ def analyze_stcw_from_work_starts(all_work_slots):
         'rest_period_count': rest_period_count
     }
 
+
+
+
+def analyze_stcw_from_work_starts(all_work_slots):
+    """Yhteensopivuusapu: analysoi viimeisen 24h STCW-tila.
+
+    Huomioi vuorokauden rajan yli jatkuvan lepojakson yhtenä jaksona
+    (ensimmäinen ja viimeinen lepojakso yhdistetään tarvittaessa).
+    """
+    window = list(all_work_slots[-48:])
+    if len(window) < 48:
+        window = [False] * (48 - len(window)) + window
+
+    rest_periods = []
+    current = 0
+    for is_work in window:
+        if not is_work:
+            current += 1
+        elif current > 0:
+            if current >= 2:
+                rest_periods.append(current / 2)
+            current = 0
+
+    if current > 0:
+        if current >= 2:
+            rest_periods.append(current / 2)
+
+    if rest_periods and not window[0] and not window[-1] and len(rest_periods) >= 2:
+        rest_periods[0] += rest_periods[-1]
+        rest_periods.pop()
+
+    total_rest = sum(rest_periods)
+    longest_rest = max(rest_periods) if rest_periods else 0
+    rest_period_count = len(rest_periods)
+
+    issues = []
+    if total_rest < 10:
+        issues.append(f"Lepoa vain {total_rest}h (min 10h)")
+    if rest_period_count > 2:
+        issues.append(f"Lepo {rest_period_count} osassa (max 2)")
+    if longest_rest < 6:
+        issues.append(f"Pisin lepo {longest_rest}h (min 6h)")
+
+    return {
+        'status': 'OK' if not issues else 'RIKE',
+        'issues': issues,
+        'total_rest': total_rest,
+        'longest_rest': longest_rest,
+        'rest_period_count': rest_period_count
+    }
+
 def would_cause_stcw_violation(slot, current_work, prev_day_work):
     test_work = current_work[:]
     test_work[slot] = True
@@ -441,13 +492,6 @@ def generate_schedule(days_data):
 
         sluice_arr_h = info.get('sluice_arrival_hour', info.get('sluice_hour'))
         sluice_arr_m = info.get('sluice_arrival_minute', info.get('sluice_minute', 0))
-        sluice_dep_h = info.get('sluice_departure_hour')
-        sluice_dep_m = info.get('sluice_departure_minute', 0)
-        shifting_h = info.get('shifting_hour')
-        shifting_m = info.get('shifting_minute', 0)
-        
-        sluice_arr_h = info.get('sluice_arrival_hour')
-        sluice_arr_m = info.get('sluice_arrival_minute', 0)
         sluice_dep_h = info.get('sluice_departure_hour')
         sluice_dep_m = info.get('sluice_departure_minute', 0)
         shifting_h = info.get('shifting_hour')
@@ -795,54 +839,6 @@ def generate_schedule(days_data):
             if LUNCH_START <= slot < LUNCH_END:
                 continue
             op_inside_slots.append(slot)
-        
-        for slot in op_inside_slots:
-            # Onko joku jo töissä tässä slotissa?
-            workers_in_slot = [dm for dm in daymen if dm_work[dm][slot]]
-            
-            if len(workers_in_slot) >= 1:
-                # Joku jo töissä, merkitään op-slotiksi
-                for dm in workers_in_slot:
-                    dm_ops[dm][slot] = True
-                continue
-            
-            # Kukaan ei töissä - valitse paras dayman
-            best_dm = None
-            best_score = -9999
-            
-            for dm in daymen:
-                current_hours = sum(dm_work[dm]) / 2
-                
-                # Älä ylitä max tunteja
-                if current_hours >= MAX_HOURS:
-                    continue
-                
-                score = 0
-                
-                # Jatkuvuusbonus
-                if slot > 0 and dm_work[dm][slot - 1]:
-                    score += 200
-                if slot < 47 and dm_work[dm][slot + 1]:
-                    score += 200
-                
-                # STCW-tarkistus
-                test_work = dm_work[dm][:]
-                test_work[slot] = True
-                rest_periods = count_rest_periods_in_day(test_work, prev_day_work[dm])
-                
-                if rest_periods > 2:
-                    continue
-                
-                # Tasapainobonus
-                score += (MAX_HOURS - current_hours) * 10
-                
-                if score > best_score:
-                    best_score = score
-                    best_dm = dm
-            
-            if best_dm:
-                dm_work[best_dm][slot] = True
-                dm_ops[best_dm][slot] = True
         
         # VAIHE 6: Varmista minimi 8h
         for dayman in daymen:
