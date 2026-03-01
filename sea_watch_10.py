@@ -799,7 +799,7 @@ if __name__ == "__main__":
         }
     ]
     
-    print("Generoidaan työvuorot ! (blokkipohjainen)...")
+    print("Generoidaan työvuorot  (blokkipohjainen)...")
     wb, all_days, report = generate_schedule(days_data)
     
     print("\n" + "=" * 60)
