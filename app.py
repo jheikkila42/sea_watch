@@ -4,12 +4,12 @@ import io
 import pandas as pd
 import streamlit as st
 
-from sea_watch_10 import (
-    build_workbook_and_report,
-    check_stcw_at_slot,
-    generate_schedule,
-    generate_schedule_with_manual_day1,
-)
+import sea_watch_10 as sw
+
+check_stcw_at_slot = sw.check_stcw_at_slot
+generate_schedule = sw.generate_schedule
+generate_schedule_with_manual_day1 = getattr(sw, "generate_schedule_with_manual_day1", None)
+build_workbook_and_report = getattr(sw, "build_workbook_and_report", None)
 
 WORKERS = [
     "Bosun",
@@ -22,6 +22,13 @@ WORKERS = [
 ]
 TIME_COLS = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 30]]
 
+
+
+def build_workbook_compat(all_days, num_days, workers):
+    if build_workbook_and_report is None:
+        return None
+    wb, _ = build_workbook_and_report(all_days, num_days, workers)
+    return wb
 
 def parse_time(time_str: str):
     normalized = time_str.strip().replace(".", ":")
@@ -36,7 +43,7 @@ def parse_time(time_str: str):
         h, m = int(normalized), 0
 
     if not (0 <= h <= 23 and m in (0, 30)):
-        raise ValueError("Ajan pitäää olla muodossa HH:MM, HH.MM tai pelkkä tunti (esim 22)")
+        raise ValueError("Ajan pitää olla muodossa HH:MM, HH.MM tai pelkkä tunti (esim 22)")
     return h, m
 
 
@@ -56,7 +63,7 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
 
             with col1:
                 arr_h, arr_m = parse_optional_time(
-                    "Satamaan tuloaika !! (HH:MM, tyhjä jos ei tuloa)",
+                    "Satamaan tuloaika (HH:MM, tyhjä jos ei tuloa)",
                     key=f"{key_prefix}_arr_{day}",
                 )
                 dep_h, dep_m = parse_optional_time(
@@ -269,9 +276,12 @@ def render_post_generation_editor():
         for d, edited_df in enumerate(edited_dfs):
             apply_edited_work_df(updated_all_days, d, edited_df)
 
-        wb, _ = build_workbook_and_report(updated_all_days, num_days, WORKERS)
-        store_generated_result(wb, updated_all_days, num_days)
-        st.success("Vuorot päivitetty. Excel-linkki käyttää nyt muokattua listaa.")
+        wb = build_workbook_compat(updated_all_days, num_days, WORKERS)
+        if wb is None:
+            st.error("Käytössä oleva sea_watch_10-versio ei tue Excelin uudelleenrakennusta muokatuista vuoroista (build_workbook_and_report puuttuu).")
+        else:
+            store_generated_result(wb, updated_all_days, num_days)
+            st.success("Vuorot päivitetty. Excel-linkki käyttää nyt muokattua listaa.")
 
 
 def main():
@@ -341,7 +351,11 @@ def main():
             days_data = [day1_placeholder] + days_data_rest
             manual_slots = convert_manual_df_to_slots(manual_df)
 
-            wb, all_days, _ = generate_schedule_with_manual_day1(days_data, manual_slots)
+            if generate_schedule_with_manual_day1 is None:
+                st.warning("Käytössä oleva sea_watch_10-versio ei tue manuaalista päivä 1 -generaatiota. Käytetään automaattista generaatiota.")
+                wb, all_days, _ = generate_schedule(days_data)
+            else:
+                wb, all_days, _ = generate_schedule_with_manual_day1(days_data, manual_slots)
             store_generated_result(wb, all_days, num_days)
 
     if "generated_wb" in st.session_state and "generated_all_days" in st.session_state:
