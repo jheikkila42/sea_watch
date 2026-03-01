@@ -418,6 +418,56 @@ def _enforce_departure_lock(daymen, all_dayman_work, all_dayman_dep, departure_s
 
 
 
+
+
+def _enforce_single_outside_op_worker(daymen, all_dayman_work, all_dayman_ops, mandatory_slots,
+                                      op_start, op_end, prev_day_work, arrival_start, arrival_end,
+                                      departure_start, departure_end):
+    """Varmistaa: OP 08-17 ulkopuolella -> täsmälleen yksi dayman (jos mahdollista).
+
+    Pakollisia slotteja (tulo/lähtö/slussi/shiftaus) ei muuteta tässä, jotta niiden
+    oma miehityssääntö säilyy.
+    """
+    for slot in range(max(0, op_start), min(op_end, 48)):
+        if NORMAL_START <= slot < NORMAL_END:
+            continue
+        if slot in mandatory_slots:
+            continue
+
+        working = [dm for dm in daymen if all_dayman_work[dm][slot]]
+
+        if len(working) > 1:
+            # Pidä se, jolla on paras paikallinen jatkuvuus ja pienin kokonaiskuorma
+            def keep_key(dm):
+                continuity = 0
+                if slot > 0 and all_dayman_work[dm][slot - 1]:
+                    continuity += 1
+                if slot < 47 and all_dayman_work[dm][slot + 1]:
+                    continuity += 1
+                return (-continuity, sum(all_dayman_work[dm]))
+
+            keep = sorted(working, key=keep_key)[0]
+            for dm in working:
+                if dm == keep:
+                    continue
+                all_dayman_work[dm][slot] = False
+                all_dayman_ops[dm][slot] = False
+            working = [keep]
+
+        if len(working) == 0:
+            scores = {}
+            for dm in daymen:
+                scores[dm] = score_slot(
+                    slot, dm, all_dayman_work[dm], all_dayman_work,
+                    prev_day_work[dm], daymen,
+                    arrival_start, arrival_end, departure_start, departure_end, op_start, op_end
+                )
+
+            best = max(scores, key=scores.get)
+            if scores[best] > -10000:
+                all_dayman_work[best][slot] = True
+                all_dayman_ops[best][slot] = True
+
 def _trim_redundant_short_segments(daymen, all_dayman_work, all_dayman_ops, mandatory_slots,
                                    op_start, op_end, short_segment_max_slots=SHORT_SEGMENT_MAX_SLOTS):
     """Poistaa tarpeettomat lyhyet työpätkät (esim. 30-60 min), jos kattavuus säilyy.
@@ -887,7 +937,22 @@ def generate_schedule(days_data):
                 else:
                     i += 1
         
-        # VAIHE 8: Siisti lyhyet tarpeettomat työpätkät (esim. 30-60 min)
+        # VAIHE 8: OP 08-17 ulkopuolella täsmälleen yksi dayman (jos mahdollista)
+        _enforce_single_outside_op_worker(
+            daymen,
+            all_dayman_work,
+            all_dayman_ops,
+            mandatory_slots,
+            op_start,
+            op_end,
+            prev_day_work,
+            arrival_start,
+            arrival_end,
+            departure_start,
+            departure_end,
+        )
+
+        # VAIHE 9: Siisti lyhyet tarpeettomat työpätkät (esim. 30-60 min)
         _trim_redundant_short_segments(
             daymen,
             all_dayman_work,
@@ -896,7 +961,6 @@ def generate_schedule(days_data):
             op_start,
             op_end,
         )
-
 
         _enforce_departure_lock(daymen, all_dayman_work, all_dayman_dep, departure_start, departure_end)
 

@@ -161,6 +161,39 @@ class TestEveningShifts:
             assert count >= 1, f"Klo {hour}:00 ei ole ketään daymania töissä"
 
 
+    def test_exactly_one_dayman_outside_8_17_during_port_ops(self):
+        """Kun OP on käynnissä 08-17 ulkopuolella, siellä on täsmälleen yksi dayman."""
+        days_data = [
+            {
+                'arrival_hour': None,
+                'arrival_minute': 0,
+                'departure_hour': None,
+                'departure_minute': 0,
+                'port_op_start_hour': 18,
+                'port_op_start_minute': 0,
+                'port_op_end_hour': 22,
+                'port_op_end_minute': 0,
+            },
+            {
+                'arrival_hour': None,
+                'arrival_minute': 0,
+                'departure_hour': None,
+                'departure_minute': 0,
+                'port_op_start_hour': 8,
+                'port_op_start_minute': 0,
+                'port_op_end_hour': 17,
+                'port_op_end_minute': 0,
+            },
+        ]
+
+        _, all_days, _ = generate_schedule(days_data)
+
+        for hour in [18, 19, 20, 21]:
+            for minute in (0, 30):
+                count = count_daymen_working_at(all_days, 0, hour, minute)
+                assert count == 1, f"Klo {hour:02d}:{minute:02d} pitäisi olla 1 dayman, on {count}"
+
+
 
 # TESTIT: STCW-SÄÄNNÖT
 # ---------------------------------------------------------------------
