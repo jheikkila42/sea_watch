@@ -59,9 +59,11 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
     days = []
     for day in range(start_day, end_day + 1):
         with st.expander(f"Päivä {day}", expanded=(day == start_day)):
-            col1, col2, col3 = st.columns(3)
+            row1_col1, row1_col2 = st.columns(2)
+            row2_col1, row2_col2 = st.columns(2)
 
-            with col1:
+            with row1_col1:
+                st.markdown("#### Tulo ja lähtö")
                 arr_h, arr_m = parse_optional_time(
                     "Satamaan tuloaika (HH:MM, tyhjä jos ei tuloa)",
                     key=f"{key_prefix}_arr_{day}",
@@ -71,7 +73,8 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
                     key=f"{key_prefix}_dep_{day}",
                 )
 
-            with col2:
+            with row1_col2:
+                st.markdown("#### Satamaoperaatiot")
                 op_s_h, op_s_m = parse_optional_time(
                     "Satamaoperaation alku (HH:MM)",
                     key=f"{key_prefix}_opstart_{day}",
@@ -81,20 +84,23 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
                     key=f"{key_prefix}_opend_{day}",
                 )
 
-            with col3:
+            with row2_col1:
+                st.markdown("#### Slussi")
                 sluice_arr_h, sluice_arr_m = parse_optional_time(
                     "Slussi - tulo alku (HH:MM, kesto 2h)",
                     key=f"{key_prefix}_sluice_arr_{day}",
                 )
+                sluice_dep_h, sluice_dep_m = parse_optional_time(
+                    "Slussi - lähtö alku (HH:MM, kesto 2h)",
+                    key=f"{key_prefix}_sluice_dep_{day}",
+                )
+
+            with row2_col2:
+                st.markdown("#### Shiftaus")
                 shifting_h, shifting_m = parse_optional_time(
                     "Shiftaus alku (HH:MM, kesto 1h)",
                     key=f"{key_prefix}_shifting_{day}",
                 )
-
-            sluice_dep_h, sluice_dep_m = parse_optional_time(
-                "Slussi - lähtö alku (HH:MM, kesto 2h)",
-                key=f"{key_prefix}_sluice_dep_{day}",
-            )
 
             days.append(
                 {

@@ -817,29 +817,6 @@ def generate_schedule(days_data):
                     add_block(dm_work[best_dm], block_start, block_end, dm_ops[best_dm])
                     dm_index = (daymen.index(best_dm) + 1) % len(daymen)
         
-        # ====================================================================
-        # VAIHE 2: LASKE TARVITTAVAT LISÄTUNNIT
-        # ====================================================================
-        
-        needed_hours = {}
-        for dm in daymen:
-            current = sum(dm_work[dm]) / 2
-            needed_hours[dm] = max(0, MIN_HOURS - current)
-        
-        # ====================================================================
-        # VAIHE 3: JAA TYÖBLOKIT
-        # Strategia: 
-        # 1. Ensin varmista op-kattavuus 08-17 välillä
-        # 2. Sitten laajenna blokkeja tarvittaessa
-        # ====================================================================
-        
-        # 3.1: Op-kattavuus 08-17 välillä - varmista että joku on aina töissä
-        op_inside_slots = []
-        for slot in range(max(op_start, NORMAL_START), min(op_end, NORMAL_END)):
-            if LUNCH_START <= slot < LUNCH_END:
-                continue
-            op_inside_slots.append(slot)
-        
         # VAIHE 6: Varmista minimi 8h
         for dayman in daymen:
             current_hours = sum(all_dayman_work[dayman]) / 2
