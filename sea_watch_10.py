@@ -29,7 +29,6 @@ LUNCH_START = 23    # 11:30
 LUNCH_END = 24      # 12:00
 MIN_HOURS = 8
 MAX_HOURS = 10
-MAX_OUTSIDE_NORMAL_SLOTS = 12  # 6h = 12 slottia
 
 
 def time_to_slot(h, m=0):
@@ -392,11 +391,9 @@ def generate_schedule(days_data):
             
             if current_worker is not None:
                 current_hours = sum(dm_work[current_worker]) / 2
-                outside_hours = sum(1 for s in range(48) 
-                                   if dm_work[current_worker][s] and (s < NORMAL_START or s >= NORMAL_END)) / 2
                 
                 # Voiko jatkaa?
-                if current_hours < MAX_HOURS and outside_hours < 6:
+                if current_hours < MAX_HOURS:
                     # STCW-tarkistus
                     test_work = dm_work[current_worker][:]
                     test_work[slot] = True
@@ -419,13 +416,9 @@ def generate_schedule(days_data):
                         continue  # Nykyinen ei voi, kokeile muita
                     
                     current_hours = sum(dm_work[dm]) / 2
-                    outside_hours = sum(1 for s in range(48) 
-                                       if dm_work[dm][s] and (s < NORMAL_START or s >= NORMAL_END)) / 2
                     
                     # Tarkista rajoitteet
                     if current_hours >= MAX_HOURS:
-                        continue
-                    if outside_hours >= 6:
                         continue
                     
                     # STCW-tarkistus
@@ -549,7 +542,7 @@ def generate_schedule(days_data):
                 dm_ops[best_dm][slot] = True
         
         # 3.2: Täytä loput tunnit 08:00 alkaen
-        # Strategia: Aloita AINA 08:00 ja täytä eteenpäin
+        # Jos dayman teki yövuoron, jatka se yhtenäiseksi 08:00 asti
         
         for dm in daymen:
             current_hours = sum(dm_work[dm]) / 2
@@ -557,7 +550,32 @@ def generate_schedule(days_data):
             if current_hours >= MIN_HOURS:
                 continue
             
-            # Täytä 08:00 alkaen kunnes 8h täynnä
+            # Tarkista onko dayman tehnyt yövuoron (työtä 00:00-08:00 välillä)
+            night_work_slots = sum(1 for s in range(0, NORMAL_START) if dm_work[dm][s])
+            did_night_shift = night_work_slots >= 4  # Vähintään 2h yötyötä
+            
+            if did_night_shift:
+                # Etsi viimeinen työslotti ennen 08:00
+                last_night_slot = -1
+                for s in range(NORMAL_START - 1, -1, -1):
+                    if dm_work[dm][s]:
+                        last_night_slot = s
+                        break
+                
+                # Jos yövuoro loppui ENNEN 08:00, jatka se 08:00 asti
+                if last_night_slot >= 0 and last_night_slot < NORMAL_START - 1:
+                    for s in range(last_night_slot + 1, NORMAL_START):
+                        if current_hours >= MIN_HOURS:
+                            break
+                        dm_work[dm][s] = True
+                        if op_start <= s < min(op_end, 48):
+                            dm_ops[dm][s] = True
+                        current_hours = sum(dm_work[dm]) / 2
+                
+                # Yövuoron jälkeen ei erillistä blokkia - dayman lepää loppupäivän
+                continue
+            
+            # Täytä 08:00 alkaen kunnes 8h täynnä (vain jos EI tehnyt yövuoroa)
             slot = NORMAL_START  # 08:00
             
             while current_hours < MIN_HOURS and slot < NORMAL_END:
