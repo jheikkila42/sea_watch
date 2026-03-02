@@ -21,6 +21,7 @@ WORKERS = [
     "Watchman 3",
 ]
 TIME_COLS = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 30]]
+DISPLAY_TIME_COLS = [f"{h:02d}" if m == 0 else f"{h:02d}½" for h in range(24) for m in [0, 30]]
 
 
 
@@ -31,25 +32,6 @@ def build_workbook_compat(all_days, num_days, workers):
     return wb
 
 
-
-def apply_compact_table_css():
-    st.markdown(
-        """
-        <style>
-        div[data-testid="stDataFrame"] table,
-        div[data-testid="stDataEditor"] table {
-            font-size: 11px !important;
-        }
-        div[data-testid="stDataFrame"] th,
-        div[data-testid="stDataFrame"] td,
-        div[data-testid="stDataEditor"] th,
-        div[data-testid="stDataEditor"] td {
-            padding: 0.12rem 0.22rem !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
 
 def parse_time(time_str: str):
     normalized = time_str.strip().replace(".", ":")
@@ -156,7 +138,7 @@ def create_schedule_table(all_days, day_idx, workers):
         sluice = day_data.get("sluice_slots", [False] * 48)
         shifting = day_data.get("shifting_slots", [False] * 48)
 
-        for i, time_col in enumerate(TIME_COLS):
+        for i, time_col in enumerate(DISPLAY_TIME_COLS):
             if sluice[i]:
                 row[time_col] = "SL"
             elif shifting[i]:
@@ -208,7 +190,7 @@ def convert_manual_df_to_slots(df: pd.DataFrame):
 
 def create_editable_work_df(all_days, day_idx):
     data = {"Työntekijä": WORKERS}
-    for col_idx, col in enumerate(TIME_COLS):
+    for col_idx, col in enumerate(DISPLAY_TIME_COLS):
         data[col] = [bool(all_days[w][day_idx]["work_slots"][col_idx]) for w in WORKERS]
     return pd.DataFrame(data)
 
@@ -218,7 +200,7 @@ def apply_edited_work_df(all_days, day_idx, edited_df):
         worker = row["Työntekijä"]
         if worker not in all_days:
             continue
-        all_days[worker][day_idx]["work_slots"] = [bool(row[t]) for t in TIME_COLS]
+        all_days[worker][day_idx]["work_slots"] = [bool(row[t]) for t in DISPLAY_TIME_COLS]
 
 
 def render_results(num_days, wb, all_days):
@@ -226,7 +208,7 @@ def render_results(num_days, wb, all_days):
     for d in range(num_days):
         st.markdown(f"**Päivä {d+1}**")
         df = create_schedule_table(all_days, d, WORKERS)
-        st.dataframe(style_schedule_table(df), use_container_width=True, height=230)
+        st.dataframe(style_schedule_table(df), use_container_width=True, height=300)
         st.markdown("---")
 
     st.subheader("📊 STCW-lepoaika-analyysi")
@@ -294,7 +276,7 @@ def render_post_generation_editor():
                 key=f"post_edit_day_{d}",
                 disabled=["Työntekijä"],
                 column_config={
-                    c: st.column_config.CheckboxColumn(c, default=False) for c in TIME_COLS
+                    c: st.column_config.CheckboxColumn(c, default=False, width="small") for c in DISPLAY_TIME_COLS
                 },
             )
             edited_dfs.append(edited_df)
@@ -316,7 +298,6 @@ def render_post_generation_editor():
 
 def main():
     st.set_page_config(page_title="Sea Watch - Testivuorogeneraattori", layout="wide")
-    apply_compact_table_css()
 
     st.title("🛳️ Sea Watch - Työvuorolistageneraattori")
     st.write(

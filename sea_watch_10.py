@@ -190,6 +190,57 @@ def analyze_stcw_from_work_starts(all_work_slots):
         'rest_period_count': rest_period_count
     }
 
+
+
+
+def analyze_stcw_from_work_starts(all_work_slots):
+    """Yhteensopivuusapu: analysoi viimeisen 24h STCW-tila.
+
+    Huomioi vuorokauden rajan yli jatkuvan lepojakson yhtenä jaksona
+    (ensimmäinen ja viimeinen lepojakso yhdistetään tarvittaessa).
+    """
+    window = list(all_work_slots[-48:])
+    if len(window) < 48:
+        window = [False] * (48 - len(window)) + window
+
+    rest_periods = []
+    current = 0
+    for is_work in window:
+        if not is_work:
+            current += 1
+        elif current > 0:
+            if current >= 2:
+                rest_periods.append(current / 2)
+            current = 0
+
+    if current > 0:
+        if current >= 2:
+            rest_periods.append(current / 2)
+
+    if rest_periods and not window[0] and not window[-1] and len(rest_periods) >= 2:
+        rest_periods[0] += rest_periods[-1]
+        rest_periods.pop()
+
+    total_rest = sum(rest_periods)
+    longest_rest = max(rest_periods) if rest_periods else 0
+    rest_period_count = len(rest_periods)
+
+    issues = []
+    if total_rest < 10:
+        issues.append(f"Lepoa vain {total_rest}h (min 10h)")
+    if rest_period_count > 2:
+        issues.append(f"Lepo {rest_period_count} osassa (max 2)")
+    if longest_rest < 6:
+        issues.append(f"Pisin lepo {longest_rest}h (min 6h)")
+
+    return {
+        'status': 'OK' if not issues else 'RIKE',
+        'issues': issues,
+        'total_rest': total_rest,
+        'longest_rest': longest_rest,
+        'rest_period_count': rest_period_count
+    }
+
 def would_cause_stcw_violation(slot, current_work, prev_day_work):
     test_work = current_work[:]
     test_work[slot] = True
@@ -510,13 +561,6 @@ def generate_schedule(days_data):
 
         sluice_arr_h = info.get('sluice_arrival_hour', info.get('sluice_hour'))
         sluice_arr_m = info.get('sluice_arrival_minute', info.get('sluice_minute', 0))
-        sluice_dep_h = info.get('sluice_departure_hour')
-        sluice_dep_m = info.get('sluice_departure_minute', 0)
-        shifting_h = info.get('shifting_hour')
-        shifting_m = info.get('shifting_minute', 0)
-        
-        sluice_arr_h = info.get('sluice_arrival_hour')
-        sluice_arr_m = info.get('sluice_arrival_minute', 0)
         sluice_dep_h = info.get('sluice_departure_hour')
         sluice_dep_m = info.get('sluice_departure_minute', 0)
         shifting_h = info.get('shifting_hour')
