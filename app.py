@@ -30,6 +30,27 @@ def build_workbook_compat(all_days, num_days, workers):
     wb, _ = build_workbook_and_report(all_days, num_days, workers)
     return wb
 
+
+
+def apply_compact_table_css():
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stDataFrame"] table,
+        div[data-testid="stDataEditor"] table {
+            font-size: 11px !important;
+        }
+        div[data-testid="stDataFrame"] th,
+        div[data-testid="stDataFrame"] td,
+        div[data-testid="stDataEditor"] th,
+        div[data-testid="stDataEditor"] td {
+            padding: 0.12rem 0.22rem !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 def parse_time(time_str: str):
     normalized = time_str.strip().replace(".", ":")
 
@@ -65,7 +86,7 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
             with row1_col1:
                 st.markdown("#### Tulo ja lähtö")
                 arr_h, arr_m = parse_optional_time(
-                    "Satamaan tuloaika  (HH:MM, tyhjä jos ei tuloa)",
+                    "Satamaan tuloaika (HH:MM, tyhjä jos ei tuloa)",
                     key=f"{key_prefix}_arr_{day}",
                 )
                 dep_h, dep_m = parse_optional_time(
@@ -76,7 +97,7 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
             with row1_col2:
                 st.markdown("#### Satamaoperaatiot")
                 op_s_h, op_s_m = parse_optional_time(
-                    "Satamaoperaation alku  (HH:MM)",
+                    "Satamaoperaation alku (HH:MM)",
                     key=f"{key_prefix}_opstart_{day}",
                 )
                 op_e_h, op_e_m = parse_optional_time(
@@ -205,7 +226,7 @@ def render_results(num_days, wb, all_days):
     for d in range(num_days):
         st.markdown(f"**Päivä {d+1}**")
         df = create_schedule_table(all_days, d, WORKERS)
-        st.dataframe(style_schedule_table(df), use_container_width=True, height=300)
+        st.dataframe(style_schedule_table(df), use_container_width=True, height=230)
         st.markdown("---")
 
     st.subheader("📊 STCW-lepoaika-analyysi")
@@ -295,6 +316,7 @@ def render_post_generation_editor():
 
 def main():
     st.set_page_config(page_title="Sea Watch - Testivuorogeneraattori", layout="wide")
+    apply_compact_table_css()
 
     st.title("🛳️ Sea Watch - Työvuorolistageneraattori")
     st.write(
