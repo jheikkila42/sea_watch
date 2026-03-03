@@ -4,8 +4,8 @@ import io
 import pandas as pd
 import streamlit as st
 
-# Importtaa sea_watch_16 (voit vaihtaa sea_watch_10:ksi jos tarpeen)
-import sea_watch_16 as sw
+
+import sea_watch_10 as sw
 
 # Funktiot yhteensopivuutta varten
 check_stcw_at_slot = getattr(sw, "check_stcw_at_slot", None)
