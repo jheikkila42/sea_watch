@@ -3,7 +3,7 @@ import io
 import pandas as pd
 
 # importoi esittelyversio
-from sea_watch_10 import generate_schedule, parse_time, time_to_index, index_to_time_str
+import sea_watch_10 as sw
 
 
 # -------------------------------------------------------------------
