@@ -53,6 +53,26 @@ def ensure_sea_watch_time_helpers():
             return f"{h:02d}:{m}"
         sw.index_to_time_str = _index_to_time_str
 
+
+def run_generate_schedule_safe(days_data):
+    """Aja generaattori turvallisesti ja näytä selkeä virheviesti jos taustaversio on vanha.
+
+    Streamlit Cloudissa voi joskus jäädä käyttöön vanha sea_watch_10.py-versio,
+    jolloin tunnetut virheet (esim. prev_day_work/dayman) voivat kaataa ajon.
+    """
+    try:
+        return generate_schedule(days_data)
+    except UnboundLocalError as exc:
+        err = str(exc)
+        if "dayman" in err and "not associated with a value" in err:
+            st.error(
+                "Ajo epäonnistui, koska ympäristössä näyttää olevan vanha sea_watch_10-versio "
+                "(prev_day_work/dayman bugi). Päivitä deploy uusimpaan committiin ja redeployaa appi."
+            )
+        else:
+            st.error(f"Ajo epäonnistui: {exc}")
+        return None
+
 def parse_time(time_str: str):
     normalized = time_str.strip().replace(".", ":")
 
@@ -366,8 +386,10 @@ def main():
 
         if st.button("🚀 Generoi työvuorot", key="gen_auto"):
             ensure_sea_watch_time_helpers()
-            wb, all_days, _ = generate_schedule(days_data)
-            store_generated_result(wb, all_days, num_days)
+            result = run_generate_schedule_safe(days_data)
+            if result is not None:
+                wb, all_days, _ = result
+                store_generated_result(wb, all_days, num_days)
 
     with tab_manual:
         st.markdown(
@@ -415,7 +437,10 @@ def main():
             ensure_sea_watch_time_helpers()
             if generate_schedule_with_manual_day1 is None:
                 st.warning("Käytössä oleva sea_watch_10-versio ei tue manuaalista päivä 1 -generaatiota. Käytetään automaattista generaatiota.")
-                wb, all_days, _ = generate_schedule(days_data)
+                result = run_generate_schedule_safe(days_data)
+                if result is None:
+                    return
+                wb, all_days, _ = result
             else:
                 wb, all_days, _ = generate_schedule_with_manual_day1(days_data, manual_slots)
             store_generated_result(wb, all_days, num_days)
