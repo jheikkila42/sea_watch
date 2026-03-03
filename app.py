@@ -21,7 +21,7 @@ WORKERS = [
     "Watchman 3",
 ]
 TIME_COLS = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 30]]
-DISPLAY_TIME_COLS = [f"{h:02d}" if m == 0 else f"{h:02d}½" for h in range(24) for m in [0, 30]]
+HALF_DAY_COLS = [TIME_COLS[:24], TIME_COLS[24:]]
 
 
 
@@ -57,6 +57,18 @@ def parse_optional_time(label: str, key: str):
     h, m = parse_time(val)
     return h, m
 
+
+
+
+def display_time_label(time_col: str) -> str:
+    return time_col.replace(":", ".")
+
+
+def create_time_column_config(time_cols):
+    return {
+        display_time_label(c): st.column_config.CheckboxColumn(display_time_label(c), default=False, width="small")
+        for c in time_cols
+    }
 
 def build_days_data(start_day: int, end_day: int, key_prefix: str):
     days = []
@@ -127,7 +139,10 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
     return days
 
 
-def create_schedule_table(all_days, day_idx, workers):
+def create_schedule_table(all_days, day_idx, workers, time_cols):
+    indices = [TIME_COLS.index(c) for c in time_cols]
+    labels = [display_time_label(c) for c in time_cols]
+
     data = []
     for w in workers:
         row = {"Työntekijä": w}
@@ -138,19 +153,19 @@ def create_schedule_table(all_days, day_idx, workers):
         sluice = day_data.get("sluice_slots", [False] * 48)
         shifting = day_data.get("shifting_slots", [False] * 48)
 
-        for i, time_col in enumerate(DISPLAY_TIME_COLS):
-            if sluice[i]:
-                row[time_col] = "SL"
-            elif shifting[i]:
-                row[time_col] = "SH"
-            elif arr[i]:
-                row[time_col] = "B"
-            elif dep[i]:
-                row[time_col] = "C"
-            elif work[i]:
-                row[time_col] = "●"
+        for idx, label in zip(indices, labels):
+            if sluice[idx]:
+                row[label] = "SL"
+            elif shifting[idx]:
+                row[label] = "SH"
+            elif arr[idx]:
+                row[label] = "B"
+            elif dep[idx]:
+                row[label] = "C"
+            elif work[idx]:
+                row[label] = "●"
             else:
-                row[time_col] = ""
+                row[label] = ""
         data.append(row)
 
     return pd.DataFrame(data)
@@ -188,27 +203,37 @@ def convert_manual_df_to_slots(df: pd.DataFrame):
     return manual
 
 
-def create_editable_work_df(all_days, day_idx):
+def create_editable_work_df(all_days, day_idx, time_cols):
     data = {"Työntekijä": WORKERS}
-    for col_idx, col in enumerate(DISPLAY_TIME_COLS):
-        data[col] = [bool(all_days[w][day_idx]["work_slots"][col_idx]) for w in WORKERS]
+    for col in time_cols:
+        label = display_time_label(col)
+        col_idx = TIME_COLS.index(col)
+        data[label] = [bool(all_days[w][day_idx]["work_slots"][col_idx]) for w in WORKERS]
     return pd.DataFrame(data)
 
 
-def apply_edited_work_df(all_days, day_idx, edited_df):
+def apply_edited_work_df(all_days, day_idx, edited_df, time_cols):
     for _, row in edited_df.iterrows():
         worker = row["Työntekijä"]
         if worker not in all_days:
             continue
-        all_days[worker][day_idx]["work_slots"] = [bool(row[t]) for t in DISPLAY_TIME_COLS]
+        for col in time_cols:
+            label = display_time_label(col)
+            col_idx = TIME_COLS.index(col)
+            all_days[worker][day_idx]["work_slots"][col_idx] = bool(row[label])
 
 
 def render_results(num_days, wb, all_days):
     st.subheader("📋 Työvuorot")
     for d in range(num_days):
         st.markdown(f"**Päivä {d+1}**")
-        df = create_schedule_table(all_days, d, WORKERS)
-        st.dataframe(style_schedule_table(df), use_container_width=True, height=300)
+        st.caption("00.00–11.30")
+        df1 = create_schedule_table(all_days, d, WORKERS, HALF_DAY_COLS[0])
+        st.dataframe(style_schedule_table(df1), use_container_width=True, height=260)
+
+        st.caption("12.00–23.30")
+        df2 = create_schedule_table(all_days, d, WORKERS, HALF_DAY_COLS[1])
+        st.dataframe(style_schedule_table(df2), use_container_width=True, height=260)
         st.markdown("---")
 
     st.subheader("📊 STCW-lepoaika-analyysi")
@@ -268,25 +293,28 @@ def render_post_generation_editor():
         edited_dfs = []
         for d in range(num_days):
             st.markdown(f"**Muokattava päivä {d+1}**")
-            base_df = create_editable_work_df(all_days, d)
-            edited_df = st.data_editor(
-                base_df,
-                hide_index=True,
-                use_container_width=True,
-                key=f"post_edit_day_{d}",
-                disabled=["Työntekijä"],
-                column_config={
-                    c: st.column_config.CheckboxColumn(c, default=False, width="small") for c in DISPLAY_TIME_COLS
-                },
-            )
-            edited_dfs.append(edited_df)
+            day_edits = []
+            for half_idx, half_cols in enumerate(HALF_DAY_COLS):
+                st.caption("00.00–11.30" if half_idx == 0 else "12.00–23.30")
+                base_df = create_editable_work_df(all_days, d, half_cols)
+                edited_df = st.data_editor(
+                    base_df,
+                    hide_index=True,
+                    use_container_width=True,
+                    key=f"post_edit_day_{d}_half_{half_idx}",
+                    disabled=["Työntekijä"],
+                    column_config=create_time_column_config(half_cols),
+                )
+                day_edits.append((edited_df, half_cols))
+            edited_dfs.append(day_edits)
 
         regenerate_clicked = st.form_submit_button("🔁 Generoi uudelleen (päivitä Excel)")
 
     if regenerate_clicked:
         updated_all_days = copy.deepcopy(st.session_state["generated_all_days"])
-        for d, edited_df in enumerate(edited_dfs):
-            apply_edited_work_df(updated_all_days, d, edited_df)
+        for d, day_edits in enumerate(edited_dfs):
+            for edited_df, half_cols in day_edits:
+                apply_edited_work_df(updated_all_days, d, edited_df, half_cols)
 
         wb = build_workbook_compat(updated_all_days, num_days, WORKERS)
         if wb is None:
