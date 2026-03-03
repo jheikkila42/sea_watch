@@ -4,8 +4,10 @@ import io
 import pandas as pd
 import streamlit as st
 
-import sea_watch_10 as sw
+# Importtaa sea_watch_16 (voit vaihtaa sea_watch_10:ksi jos tarpeen)
+import sea_watch_16 as sw
 
+# Funktiot yhteensopivuutta varten
 check_stcw_at_slot = getattr(sw, "check_stcw_at_slot", None)
 generate_schedule = sw.generate_schedule
 generate_schedule_with_manual_day1 = getattr(sw, "generate_schedule_with_manual_day1", None)
@@ -21,7 +23,7 @@ WORKERS = [
     "Watchman 3",
 ]
 
-# KORJATTU: Kellonajat oikeassa muodossa (12:30 eikä 12 1/2)
+# Kellonajat oikeassa muodossa
 TIME_COLS = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 30]]
 DISPLAY_TIME_COLS = [f"{h:02d}:00" if m == 0 else f"{h:02d}:30" for h in range(24) for m in [0, 30]]
 
@@ -255,7 +257,7 @@ def render_post_generation_editor():
 def main():
     st.set_page_config(page_title="Sea Watch - Työvuorogeneraattori", layout="wide")
 
-    # CSS joka rajoittaa taulukoiden leveyttä ja estää skrollauksen
+    # CSS taulukoiden leveyden rajoittamiseen
     st.markdown("""
         <style>
         [data-testid="stDataFrame"] > div {
