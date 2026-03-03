@@ -33,6 +33,26 @@ def build_workbook_compat(all_days, num_days, workers):
 
 
 
+
+
+def ensure_sea_watch_time_helpers():
+    """Varmistaa, että sea_watch_10-moduulissa on aikamuunnoshelperit käytettävissä.
+
+    Joissain ympäristöissä/versioissa generate_schedule voi viitata näihin nimiin
+    module-globaalina, vaikka ne puuttuisivat exporteista.
+    """
+    if not hasattr(sw, "time_to_index"):
+        def _time_to_index(h, m):
+            return h * 2 + (1 if m >= 30 else 0)
+        sw.time_to_index = _time_to_index
+
+    if not hasattr(sw, "index_to_time_str"):
+        def _index_to_time_str(idx):
+            h = idx // 2
+            m = "30" if idx % 2 else "00"
+            return f"{h:02d}:{m}"
+        sw.index_to_time_str = _index_to_time_str
+
 def parse_time(time_str: str):
     normalized = time_str.strip().replace(".", ":")
 
@@ -345,6 +365,7 @@ def main():
         days_data = build_days_data(1, num_days, key_prefix="auto")
 
         if st.button("🚀 Generoi työvuorot", key="gen_auto"):
+            ensure_sea_watch_time_helpers()
             wb, all_days, _ = generate_schedule(days_data)
             store_generated_result(wb, all_days, num_days)
 
@@ -391,6 +412,7 @@ def main():
             days_data = [day1_placeholder] + days_data_rest
             manual_slots = convert_manual_df_to_slots(manual_df)
 
+            ensure_sea_watch_time_helpers()
             if generate_schedule_with_manual_day1 is None:
                 st.warning("Käytössä oleva sea_watch_10-versio ei tue manuaalista päivä 1 -generaatiota. Käytetään automaattista generaatiota.")
                 wb, all_days, _ = generate_schedule(days_data)
