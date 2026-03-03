@@ -591,13 +591,11 @@ def generate_schedule(days_data):
         sluice_departure_start = time_to_index(sluice_dep_h, sluice_dep_m) if sluice_dep_h is not None else None
         shifting_start = time_to_index(shifting_h, shifting_m) if shifting_h is not None else None
         
-        # Edellisen päivän työvuorot (STCW-tarkistukseen)
-        prev_day_work = {}
-        for dm in daymen:
-            if d > 0:
-                prev_day_work[dm] = all_days[dm][d - 1]['work_slots']
-            else:
-                prev_day_work[dayman] = [False] * 48
+        # Edellisen päivän työvuorot
+        prev_day_work = {
+            dm: (all_days[dm][d - 1]['work_slots'][:] if d > 0 else [False] * 48)
+            for dm in daymen
+        }
         
         # ========================================
         # BOSUN
