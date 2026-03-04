@@ -1,31 +1,83 @@
+# -*- coding: utf-8 -*-
+"""
+Sea Watch - Työvuorolistageneraattori + AI Agent
+Yhdistetty versio: kaikki toiminnot + AI-chat rajoitteineen
+"""
+
 import copy
 import io
+import os
 
 import pandas as pd
 import streamlit as st
 
+# Sea Watch moduulit
+import sea_watch_16 as sw
+from schedule_analyzer import analyze_schedule, format_analysis_report, get_analysis_for_llm
+from llm_agent import create_agent
+from constraint_parser import create_parser
 
-import sea_watch_10 as sw
-
-# Funktiot yhteensopivuutta varten
+# Funktiot
 check_stcw_at_slot = getattr(sw, "check_stcw_at_slot", None)
 generate_schedule = sw.generate_schedule
 generate_schedule_with_manual_day1 = getattr(sw, "generate_schedule_with_manual_day1", None)
 build_workbook_and_report = getattr(sw, "build_workbook_and_report", None)
 
 WORKERS = [
-    "Bosun",
-    "Dayman EU",
-    "Dayman PH1",
-    "Dayman PH2",
-    "Watchman 1",
-    "Watchman 2",
-    "Watchman 3",
+    "Bosun", "Dayman EU", "Dayman PH1", "Dayman PH2",
+    "Watchman 1", "Watchman 2", "Watchman 3",
 ]
+DAYMEN = ["Dayman EU", "Dayman PH1", "Dayman PH2"]
 
-# Kellonajat oikeassa muodossa
 TIME_COLS = [f"{h:02d}:{m:02d}" for h in range(24) for m in [0, 30]]
 DISPLAY_TIME_COLS = [f"{h:02d}:00" if m == 0 else f"{h:02d}:30" for h in range(24) for m in [0, 30]]
+
+# Käyttöraja (viestejä per sessio)
+MAX_MESSAGES_PER_SESSION = 30
+
+
+# ============================================================================
+# APUFUNKTIOT
+# ============================================================================
+
+def get_api_key():
+    """Hae API-avain Streamlit Secretsistä tai ympäristömuuttujasta."""
+    try:
+        return st.secrets["ANTHROPIC_API_KEY"]
+    except:
+        return os.environ.get("ANTHROPIC_API_KEY", "")
+
+
+def init_session_state():
+    """Alusta session state."""
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "message_count" not in st.session_state:
+        st.session_state.message_count = 0
+    if "generated_all_days" not in st.session_state:
+        st.session_state.generated_all_days = None
+    if "generated_days_data" not in st.session_state:
+        st.session_state.generated_days_data = None
+    if "generated_wb" not in st.session_state:
+        st.session_state.generated_wb = None
+    if "generated_num_days" not in st.session_state:
+        st.session_state.generated_num_days = 0
+    if "analysis" not in st.session_state:
+        st.session_state.analysis = None
+    if "agent" not in st.session_state:
+        st.session_state.agent = None
+    if "parser" not in st.session_state:
+        st.session_state.parser = None
+
+
+def init_agent_and_parser():
+    """Alusta agentti ja parseri."""
+    api_key = get_api_key()
+    if api_key:
+        if st.session_state.agent is None:
+            st.session_state.agent = create_agent(api_key)
+        if st.session_state.parser is None:
+            st.session_state.parser = create_parser(api_key)
 
 
 def build_workbook_compat(all_days, num_days, workers):
@@ -58,6 +110,10 @@ def parse_optional_time(label: str, key: str):
     h, m = parse_time(val)
     return h, m
 
+
+# ============================================================================
+# PÄIVIEN DATA
+# ============================================================================
 
 def build_days_data(start_day: int, end_day: int, key_prefix: str):
     days = []
@@ -96,6 +152,10 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
             })
     return days
 
+
+# ============================================================================
+# TAULUKOT JA NÄYTÖT
+# ============================================================================
 
 def create_schedule_table(all_days, day_idx, workers):
     data = []
@@ -171,6 +231,19 @@ def apply_edited_work_df(all_days, day_idx, edited_df):
         all_days[worker][day_idx]["work_slots"] = [bool(row[t]) for t in DISPLAY_TIME_COLS]
 
 
+def store_generated_result(wb, all_days, days_data, num_days):
+    st.session_state.generated_wb = wb
+    st.session_state.generated_all_days = all_days
+    st.session_state.generated_days_data = days_data
+    st.session_state.generated_num_days = num_days
+    # Analysoi heti
+    st.session_state.analysis = analyze_schedule(all_days, days_data)
+
+
+# ============================================================================
+# RENDER FUNKTIOT
+# ============================================================================
+
 def render_results(num_days, wb, all_days):
     st.subheader("📋 Työvuorot")
     for d in range(num_days):
@@ -210,21 +283,15 @@ def render_results(num_days, wb, all_days):
     )
 
 
-def store_generated_result(wb, all_days, num_days):
-    st.session_state["generated_wb"] = wb
-    st.session_state["generated_all_days"] = all_days
-    st.session_state["generated_num_days"] = num_days
-
-
 def render_post_generation_editor():
-    if "generated_all_days" not in st.session_state:
+    if st.session_state.generated_all_days is None:
         return
 
     st.markdown("## ✏️ Muokkaa vuoroja generoinnin jälkeen")
     st.caption("Klikkaa soluja muuttaaksesi työslotteja. Paina 'Generoi uudelleen' päivittääksesi.")
 
-    num_days = st.session_state["generated_num_days"]
-    all_days = st.session_state["generated_all_days"]
+    num_days = st.session_state.generated_num_days
+    all_days = st.session_state.generated_all_days
 
     with st.form("post_generation_edit_form"):
         edited_dfs = []
@@ -243,21 +310,219 @@ def render_post_generation_editor():
         regenerate_clicked = st.form_submit_button("🔁 Generoi uudelleen (päivitä Excel)")
 
     if regenerate_clicked:
-        updated_all_days = copy.deepcopy(st.session_state["generated_all_days"])
+        updated_all_days = copy.deepcopy(st.session_state.generated_all_days)
         for d, edited_df in enumerate(edited_dfs):
             apply_edited_work_df(updated_all_days, d, edited_df)
         wb = build_workbook_compat(updated_all_days, num_days, WORKERS)
         if wb is None:
             st.error("Excelin uudelleenrakennus epäonnistui.")
         else:
-            store_generated_result(wb, updated_all_days, num_days)
+            store_generated_result(wb, updated_all_days, st.session_state.generated_days_data, num_days)
             st.success("Vuorot päivitetty.")
 
 
+# ============================================================================
+# AI CHAT
+# ============================================================================
+
+def add_message(role: str, content: str):
+    """Lisää viesti keskusteluun."""
+    st.session_state.messages.append({"role": role, "content": content})
+    if role == "user":
+        st.session_state.message_count += 1
+
+
+def process_user_message(user_input: str):
+    """Käsittele käyttäjän viesti."""
+    # Tarkista käyttöraja
+    if st.session_state.message_count >= MAX_MESSAGES_PER_SESSION:
+        add_message("user", user_input)
+        add_message("assistant", f"⚠️ Käyttöraja ({MAX_MESSAGES_PER_SESSION} viestiä) saavutettu tälle sessiolle. Lataa sivu uudelleen aloittaaksesi uuden session.")
+        return
+    
+    add_message("user", user_input)
+    
+    agent = st.session_state.agent
+    parser = st.session_state.parser
+    analysis = st.session_state.analysis
+    
+    if not agent or not agent.is_available():
+        add_message("assistant", "⚠️ AI-toiminnot eivät ole käytettävissä.")
+        return
+    
+    lower_input = user_input.lower()
+    
+    # Tarkista onko rajoite
+    is_constraint = any(word in lower_input for word in [
+        "ei voi", "ei saa", "max", "min", "vähintään", "enintään",
+        "pakollinen", "vapaalla", "yövuoro", "iltavuoro"
+    ])
+    
+    if is_constraint and parser:
+        result = parser.parse(user_input)
+        
+        if result["understood"] and result["constraints"]:
+            for c in result["constraints"]:
+                parser.add_constraint(c)
+            
+            response = f"✅ Rajoite lisätty:\n"
+            for c in result["constraints"]:
+                response += f"  • {parser._describe_constraint(c)}\n"
+            response += f"\nAktiivisia rajoitteita: {len(parser.get_constraints())}"
+            response += "\n\n*Generoi vuorot uudelleen soveltaaksesi rajoitteita.*"
+        else:
+            response = f"En ymmärtänyt rajoitetta. {result.get('clarification_needed', '')}"
+        
+        add_message("assistant", response)
+    
+    elif "analys" in lower_input or "tarkista" in lower_input or "ongelm" in lower_input:
+        if analysis:
+            llm_data = get_analysis_for_llm(analysis)
+            if llm_data["has_problems"]:
+                response = agent.analyze_and_suggest(llm_data)
+            else:
+                response = "✅ Työvuoroissa ei havaittu ongelmia!"
+        else:
+            response = "Generoi ensin työvuorot ennen analyysiä."
+        
+        add_message("assistant", response)
+    
+    elif "yhteenveto" in lower_input or "tiivistä" in lower_input:
+        if st.session_state.generated_all_days and st.session_state.generated_days_data:
+            response = agent.get_schedule_summary(
+                st.session_state.generated_all_days, 
+                st.session_state.generated_days_data
+            )
+        else:
+            response = "Generoi ensin työvuorot."
+        
+        add_message("assistant", response)
+    
+    elif "rajoite" in lower_input and ("näytä" in lower_input or "listaa" in lower_input or "mitä" in lower_input):
+        if parser:
+            response = parser.format_constraints()
+        else:
+            response = "Rajoite-parseri ei käytettävissä."
+        
+        add_message("assistant", response)
+    
+    elif "tyhjennä" in lower_input or "poista rajoitteet" in lower_input or "nollaa" in lower_input:
+        if parser:
+            parser.clear_constraints()
+            response = "✅ Rajoitteet tyhjennetty."
+        else:
+            response = "Parseri ei käytettävissä."
+        
+        add_message("assistant", response)
+    
+    else:
+        context = None
+        if analysis:
+            context = get_analysis_for_llm(analysis)
+        
+        response = agent.answer_question(user_input, context)
+        add_message("assistant", response)
+
+
+def render_analysis_tab():
+    """Renderöi analyysivälilehti."""
+    st.markdown("### 📊 Työvuoroanalyysi")
+    
+    if st.session_state.analysis is None:
+        st.info("Generoi ensin työvuorot nähdäksesi analyysin.")
+        return
+    
+    analysis = st.session_state.analysis
+    summary = analysis['summary']
+    
+    # Yhteenveto
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Ongelmat", summary['total_issues'])
+    col2.metric("Varoitukset", summary['total_warnings'])
+    col3.metric("STCW-rikkeet", summary['stcw_violations'])
+    col4.metric("Op-aukot", summary['op_coverage_gaps'])
+    
+    # Yksityiskohdat
+    if summary['total_issues'] > 0 or summary['total_warnings'] > 0:
+        st.markdown("#### Havaitut ongelmat")
+        
+        for wa in analysis['worker_analyses']:
+            if wa['issues'] or wa['warnings']:
+                with st.expander(f"{wa['worker']} - Päivä {wa['day']} ({wa['hours']}h)"):
+                    for issue in wa['issues']:
+                        st.error(f"❌ {issue}")
+                    for warning in wa['warnings']:
+                        st.warning(f"⚠️ {warning}")
+        
+        # LLM-analyysi
+        agent = st.session_state.agent
+        if agent and agent.is_available():
+            if st.button("🤖 Pyydä AI-korjausehdotuksia"):
+                with st.spinner("Analysoidaan..."):
+                    llm_data = get_analysis_for_llm(analysis)
+                    response = agent.analyze_and_suggest(llm_data)
+                st.markdown("#### AI-korjausehdotukset")
+                st.markdown(response)
+    else:
+        st.success("✅ Ei ongelmia havaittu!")
+
+
+def render_chat_tab():
+    """Renderöi chat-välilehti."""
+    st.markdown("### 💬 Keskustele AI-assistentin kanssa")
+    st.caption(f"Voit kysyä vuoroista, pyytää analyysiä tai lisätä rajoitteita. ({st.session_state.message_count}/{MAX_MESSAGES_PER_SESSION} viestiä)")
+    
+    # Esimerkkejä
+    with st.expander("💡 Esimerkkejä"):
+        st.markdown("""
+        **Rajoitteet:**
+        - "EU ei voi tehdä yövuoroa"
+        - "PH1 tekee max 8 tuntia"
+        - "PH2 on vapaalla päivänä 2"
+        
+        **Kysymykset:**
+        - "Analysoi vuorot"
+        - "Miksi PH1:llä on vähän tunteja?"
+        - "Tee yhteenveto"
+        
+        **Hallinta:**
+        - "Näytä rajoitteet"
+        - "Tyhjennä rajoitteet"
+        """)
+    
+    # Keskusteluhistoria
+    chat_container = st.container()
+    with chat_container:
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+    
+    # Syöte
+    if prompt := st.chat_input("Kirjoita viesti..."):
+        process_user_message(prompt)
+        st.rerun()
+    
+    # Tyhjennä keskustelu
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("🗑️ Tyhjennä chat"):
+            st.session_state.messages = []
+            if st.session_state.agent:
+                st.session_state.agent.clear_history()
+            st.rerun()
+
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
 def main():
     st.set_page_config(page_title="Sea Watch - Työvuorogeneraattori", layout="wide")
-
-    # CSS taulukoiden leveyden rajoittamiseen
+    
+    init_session_state()
+    init_agent_and_parser()
+    
+    # CSS
     st.markdown("""
         <style>
         [data-testid="stDataFrame"] > div {
@@ -281,22 +546,85 @@ def main():
         }
         </style>
     """, unsafe_allow_html=True)
-
+    
+    # Sivupalkki
+    with st.sidebar:
+        st.title("⚙️ Asetukset")
+        
+        num_days = st.number_input("Päivien määrä", min_value=1, max_value=14, value=2, step=1)
+        st.info("Jätä kenttä tyhjäksi jos tapahtumaa ei ole.")
+        
+        st.divider()
+        
+        # AI-status
+        if st.session_state.agent and st.session_state.agent.is_available():
+            st.success("🤖 AI käytettävissä")
+        else:
+            st.warning("🤖 AI ei käytettävissä")
+        
+        st.divider()
+        
+        # Aktiiviset rajoitteet
+        st.markdown("**Aktiiviset rajoitteet:**")
+        if st.session_state.parser:
+            constraints = st.session_state.parser.get_constraints()
+            if constraints:
+                for i, c in enumerate(constraints):
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.caption(st.session_state.parser._describe_constraint(c))
+                    with col2:
+                        if st.button("🗑️", key=f"del_constraint_{i}"):
+                            st.session_state.parser.remove_constraint(i)
+                            st.rerun()
+            else:
+                st.caption("Ei rajoitteita")
+            
+            if constraints and st.button("Tyhjennä kaikki rajoitteet"):
+                st.session_state.parser.clear_constraints()
+                st.rerun()
+    
+    # Otsikko
     st.title("🛳️ Sea Watch - Työvuorolistageneraattori")
-    st.write("Syötä päivien tiedot automaattisesti tai manuaalisesti.")
-
-    num_days = st.sidebar.number_input("Päivien määrä", min_value=1, max_value=14, value=2, step=1)
-    st.sidebar.info("Jätä kenttä tyhjäksi jos tapahtumaa ei ole.")
-
-    tab_auto, tab_manual = st.tabs(["Automaattinen syöttö", "Päivä 1 manuaalinen"])
-
+    
+    # Välilehdet
+    tab_auto, tab_manual, tab_analysis, tab_chat = st.tabs([
+        "📝 Automaattinen syöttö", 
+        "✋ Päivä 1 manuaalinen",
+        "📊 Analyysi",
+        "💬 AI Chat"
+    ])
+    
+    # Tab 1: Automaattinen syöttö
     with tab_auto:
         st.markdown("Syötä kaikkien päivien tulo-/lähtöajat ja satamaoperaatiot.")
         days_data = build_days_data(1, num_days, key_prefix="auto")
-        if st.button("🚀 Generoi työvuorot", key="gen_auto"):
-            wb, all_days, _ = generate_schedule(days_data)
-            store_generated_result(wb, all_days, num_days)
-
+        
+        if st.button("🚀 Generoi työvuorot", key="gen_auto", type="primary"):
+            # Hae rajoitteet
+            constraints = []
+            if st.session_state.parser:
+                constraints = st.session_state.parser.get_constraints()
+            
+            with st.spinner("Generoidaan..."):
+                wb, all_days, _ = generate_schedule(days_data, constraints=constraints)
+                store_generated_result(wb, all_days, days_data, num_days)
+            
+            if constraints:
+                st.success(f"✅ Työvuorot generoitu {len(constraints)} rajoitteella!")
+            else:
+                st.success("✅ Työvuorot generoitu!")
+        
+        # Näytä tulokset
+        if st.session_state.generated_all_days is not None:
+            render_results(
+                st.session_state.generated_num_days,
+                st.session_state.generated_wb,
+                st.session_state.generated_all_days
+            )
+            render_post_generation_editor()
+    
+    # Tab 2: Manuaalinen päivä 1
     with tab_manual:
         st.markdown("Maalaa päivän 1 työtunnit. Päivät 2+ syötetään normaalisti.")
         manual_default = init_manual_day1_df()
@@ -305,12 +633,13 @@ def main():
             key="manual_day1_editor", disabled=["Työntekijä"],
             column_config={c: st.column_config.CheckboxColumn(c, default=False) for c in TIME_COLS},
         )
+        
         if num_days >= 2:
             st.markdown("#### Päivät 2+")
             days_data_rest = build_days_data(2, num_days, key_prefix="manual")
         else:
             days_data_rest = []
-
+        
         if st.button("🚀 Generoi työvuorot (manuaalinen päivä 1)", key="gen_manual"):
             day1_placeholder = {
                 "arrival_hour": None, "arrival_minute": 0,
@@ -323,16 +652,28 @@ def main():
             }
             days_data = [day1_placeholder] + days_data_rest
             manual_slots = convert_manual_df_to_slots(manual_df)
+            
+            # Hae rajoitteet
+            constraints = []
+            if st.session_state.parser:
+                constraints = st.session_state.parser.get_constraints()
+            
             if generate_schedule_with_manual_day1 is None:
                 st.warning("Manuaalinen päivä 1 ei tuettu. Käytetään automaattista.")
-                wb, all_days, _ = generate_schedule(days_data)
+                wb, all_days, _ = generate_schedule(days_data, constraints=constraints)
             else:
                 wb, all_days, _ = generate_schedule_with_manual_day1(days_data, manual_slots)
-            store_generated_result(wb, all_days, num_days)
-
-    if "generated_wb" in st.session_state and "generated_all_days" in st.session_state:
-        render_results(st.session_state["generated_num_days"], st.session_state["generated_wb"], st.session_state["generated_all_days"])
-        render_post_generation_editor()
+            
+            store_generated_result(wb, all_days, days_data, num_days)
+            st.success("✅ Työvuorot generoitu!")
+    
+    # Tab 3: Analyysi
+    with tab_analysis:
+        render_analysis_tab()
+    
+    # Tab 4: AI Chat
+    with tab_chat:
+        render_chat_tab()
 
 
 if __name__ == "__main__":
