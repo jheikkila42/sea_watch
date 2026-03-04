@@ -1,2 +1,8 @@
 streamlit
+
 openpyxl
+
+streamlit
+pandas
+openpyxl
+anthropic
