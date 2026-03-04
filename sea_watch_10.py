@@ -255,13 +255,186 @@ def choose_night_split_slot(prev_early, prev_late, arrival_start=None,
 
 
 # ============================================================================
+# RAJOITTEIDEN TARKISTUS
+# ============================================================================
+
+def parse_time_str(time_str):
+    """Parsii aikamerkkijonon (HH:MM) slotiksi."""
+    if not time_str:
+        return None
+    if isinstance(time_str, int):
+        return time_str * 2
+    time_str = str(time_str).replace(".", ":")
+    parts = time_str.split(":")
+    h = int(parts[0])
+    m = int(parts[1]) if len(parts) > 1 else 0
+    return time_to_slot(h, m)
+
+
+def can_work_slot(worker, slot, day_idx, constraints, current_hours=0):
+    """
+    Tarkistaa voiko työntekijä tehdä tietyn slotin rajoitteiden perusteella.
+    
+    Args:
+        worker: Työntekijän nimi
+        slot: Slotti (0-47)
+        day_idx: Päivän indeksi (0-based)
+        constraints: Lista rajoitteista
+        current_hours: Työntekijän nykyiset tunnit
+    
+    Returns:
+        bool: True jos voi tehdä, False jos rajoite estää
+    """
+    if not constraints:
+        return True
+    
+    for c in constraints:
+        c_worker = c.get("worker")
+        c_type = c.get("type")
+        c_day = c.get("day")
+        
+        # Tarkista koskeeko rajoite tätä työntekijää
+        if c_worker and c_worker != worker:
+            continue
+        
+        # Tarkista koskeeko rajoite tätä päivää
+        if c_day is not None and c_day != day_idx + 1:  # day on 1-indexed
+            continue
+        
+        # Rajoitetyyppien tarkistus
+        if c_type == "no_night_shift":
+            # Yövuoro = 00:00-08:00 (slotit 0-15)
+            if slot < NORMAL_START:
+                return False
+        
+        elif c_type == "no_evening_shift":
+            # Iltavuoro = 17:00-00:00 (slotit 34-47)
+            if slot >= NORMAL_END:
+                return False
+        
+        elif c_type == "cannot_work_slot":
+            start = parse_time_str(c.get("start_time"))
+            end = parse_time_str(c.get("end_time"))
+            if start is not None and end is not None:
+                if start <= slot < end:
+                    return False
+        
+        elif c_type == "max_hours":
+            max_h = c.get("value", MAX_HOURS)
+            if current_hours >= max_h:
+                return False
+        
+        elif c_type == "day_off":
+            # Koko päivä vapaa
+            return False
+    
+    return True
+
+
+def must_work_slot(worker, slot, day_idx, constraints):
+    """
+    Tarkistaa onko työntekijän PAKKO tehdä tietty slotti.
+    
+    Returns:
+        bool: True jos pakollinen, False muuten
+    """
+    if not constraints:
+        return False
+    
+    for c in constraints:
+        c_worker = c.get("worker")
+        c_type = c.get("type")
+        c_day = c.get("day")
+        
+        if c_worker and c_worker != worker:
+            continue
+        
+        if c_day is not None and c_day != day_idx + 1:
+            continue
+        
+        if c_type == "must_work_slot":
+            start = parse_time_str(c.get("start_time"))
+            end = parse_time_str(c.get("end_time"))
+            if start is not None and end is not None:
+                if start <= slot < end:
+                    return True
+    
+    return False
+
+
+def get_preferred_night_worker(day_idx, constraints, daymen):
+    """
+    Palauttaa työntekijän joka on määrätty yövuoroon.
+    
+    Returns:
+        str tai None
+    """
+    if not constraints:
+        return None
+    
+    for c in constraints:
+        if c.get("type") == "assign_night_shift":
+            c_day = c.get("day")
+            if c_day is None or c_day == day_idx + 1:
+                worker = c.get("worker")
+                if worker in daymen:
+                    return worker
+    
+    return None
+
+
+def get_min_hours(worker, constraints):
+    """Palauttaa työntekijän minimitunnit rajoitteiden perusteella."""
+    for c in constraints or []:
+        if c.get("worker") == worker and c.get("type") == "min_hours":
+            return c.get("value", MIN_HOURS)
+    return MIN_HOURS
+
+
+def get_max_hours(worker, constraints):
+    """Palauttaa työntekijän maksimitunnit rajoitteiden perusteella."""
+    for c in constraints or []:
+        if c.get("worker") == worker and c.get("type") == "max_hours":
+            return c.get("value", MAX_HOURS)
+    return MAX_HOURS
+
+
+def is_day_off(worker, day_idx, constraints):
+    """Tarkistaa onko työntekijällä vapaapäivä."""
+    if not constraints:
+        return False
+    
+    for c in constraints:
+        if c.get("type") == "day_off":
+            if c.get("worker") == worker:
+                c_day = c.get("day")
+                if c_day is None or c_day == day_idx + 1:
+                    return True
+    return False
+
+
+# ============================================================================
 # PÄÄFUNKTIO
 # ============================================================================
 
-def generate_schedule(days_data):
+def generate_schedule(days_data, constraints=None):
     """
     Generoi työvuorot blokkipohjaisella lähestymistavalla.
+    
+    Args:
+        days_data: Lista päivien tiedoista
+        constraints: Lista rajoitteista (valinnainen)
+            [
+                {"type": "no_night_shift", "worker": "Dayman EU"},
+                {"type": "max_hours", "worker": "Dayman PH1", "value": 8},
+                {"type": "must_work_slot", "worker": "Dayman PH2", "start_time": "10:00", "end_time": "14:00"},
+                {"type": "day_off", "worker": "Dayman EU", "day": 2},
+                ...
+            ]
     """
+    if constraints is None:
+        constraints = []
+    
     workers = ['Bosun', 'Dayman EU', 'Dayman PH1', 'Dayman PH2',
                'Watchman 1', 'Watchman 2', 'Watchman 3']
     daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
@@ -378,23 +551,55 @@ def generate_schedule(days_data):
         dm_shifting = {dm: [False] * 48 for dm in daymen}
         
         # ====================================================================
+        # VAIHE 0.5: PAKOLLISET SLOTIT RAJOITTEISTA (must_work_slot)
+        # ====================================================================
+        
+        for dm in daymen:
+            if is_day_off(dm, d, constraints):
+                continue
+            for slot in range(48):
+                if must_work_slot(dm, slot, d, constraints):
+                    dm_work[dm][slot] = True
+                    if op_start <= slot < min(op_end, 48):
+                        dm_ops[dm][slot] = True
+        
+        # ====================================================================
         # VAIHE 1: PAKOLLISET
         # ====================================================================
         
-        # 1.1: Tulo - kaikki daymanit (1h)
-        if arrival_start is not None:
-            for dm in daymen:
-                add_block(dm_work[dm], arrival_start, arrival_start + 2, dm_arr[dm])
+        # Filtteröi daymanit joilla on vapaapäivä
+        active_daymen = [dm for dm in daymen if not is_day_off(dm, d, constraints)]
         
-        # 1.2: Lähtö - 2 daymaniä (1h)
+        # 1.1: Tulo - kaikki aktiiviset daymanit (1h)
+        if arrival_start is not None:
+            for dm in active_daymen:
+                # Tarkista rajoitteet joka slotille
+                can_add = True
+                for slot in range(arrival_start, arrival_start + 2):
+                    if not can_work_slot(dm, slot, d, constraints, sum(dm_work[dm])/2):
+                        can_add = False
+                        break
+                if can_add:
+                    add_block(dm_work[dm], arrival_start, arrival_start + 2, dm_arr[dm])
+        
+        # 1.2: Lähtö - 2 daymaniä (1h) - huomioi rajoitteet
         if departure_start is not None:
             scores = {}
-            for dm in daymen:
+            for dm in active_daymen:
+                # Tarkista voiko tehdä lähtöslotin
+                can_do = True
+                for slot in range(departure_start, departure_start + 2):
+                    if not can_work_slot(dm, slot, d, constraints, sum(dm_work[dm])/2):
+                        can_do = False
+                        break
+                if not can_do:
+                    continue
+                
                 hours = sum(dm_work[dm]) / 2
                 continuity = 1 if (departure_start > 0 and dm_work[dm][departure_start - 1]) else 0
                 scores[dm] = -hours + continuity
             
-            selected = sorted(daymen, key=lambda x: scores[x], reverse=True)[:2]
+            selected = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
             for dm in selected:
                 add_block(dm_work[dm], departure_start, departure_start + 2, dm_dep[dm])
         
@@ -462,8 +667,10 @@ def generate_schedule(days_data):
             
             if current_worker is not None:
                 current_hours = sum(dm_work[current_worker]) / 2
+                max_h = get_max_hours(current_worker, constraints)
                 
-                if current_hours < MAX_HOURS:
+                # Tarkista rajoitteet
+                if current_hours < max_h and can_work_slot(current_worker, slot, d, constraints, current_hours):
                     test_work = dm_work[current_worker][:]
                     test_work[slot] = True
                     stcw_ok = check_stcw_ok(test_work, prev_day_work[current_worker])
@@ -478,13 +685,21 @@ def generate_schedule(days_data):
                 best_dm = None
                 best_score = -9999
                 
-                for dm in daymen:
+                # Tarkista onko joku määrätty yövuoroon
+                preferred = get_preferred_night_worker(d, constraints, active_daymen)
+                
+                for dm in active_daymen:
                     if dm == current_worker:
                         continue
                     
                     current_hours = sum(dm_work[dm]) / 2
+                    max_h = get_max_hours(dm, constraints)
                     
-                    if current_hours >= MAX_HOURS:
+                    if current_hours >= max_h:
+                        continue
+                    
+                    # Tarkista rajoitteet
+                    if not can_work_slot(dm, slot, d, constraints, current_hours):
                         continue
                     
                     test_work = dm_work[dm][:]
@@ -495,7 +710,11 @@ def generate_schedule(days_data):
                         continue
                     
                     score = 0
-                    score += (MAX_HOURS - current_hours) * 10
+                    score += (max_h - current_hours) * 10
+                    
+                    # Priorisoi jos määrätty yövuoroon
+                    if preferred and dm == preferred:
+                        score += 500
                     
                     # Priorisoi daymaniä jolla pidempi lepo edellisestä päivästä
                     prev_work = prev_day_work[dm]
@@ -523,7 +742,8 @@ def generate_schedule(days_data):
                 else:
                     if current_worker is not None:
                         current_hours = sum(dm_work[current_worker]) / 2
-                        if current_hours < MAX_HOURS:
+                        max_h = get_max_hours(current_worker, constraints)
+                        if current_hours < max_h:
                             dm_work[current_worker][slot] = True
                             dm_ops[current_worker][slot] = True
         
@@ -532,9 +752,10 @@ def generate_schedule(days_data):
         # ====================================================================
         
         needed_hours = {}
-        for dm in daymen:
+        for dm in active_daymen:
             current = sum(dm_work[dm]) / 2
-            needed_hours[dm] = max(0, MIN_HOURS - current)
+            min_h = get_min_hours(dm, constraints)
+            needed_hours[dm] = max(0, min_h - current)
         
         # ====================================================================
         # VAIHE 3: JAA TYÖBLOKIT
@@ -548,7 +769,7 @@ def generate_schedule(days_data):
             op_inside_slots.append(slot)
         
         for slot in op_inside_slots:
-            workers_in_slot = [dm for dm in daymen if dm_work[dm][slot]]
+            workers_in_slot = [dm for dm in active_daymen if dm_work[dm][slot]]
             
             if len(workers_in_slot) >= 1:
                 for dm in workers_in_slot:
@@ -558,10 +779,15 @@ def generate_schedule(days_data):
             best_dm = None
             best_score = -9999
             
-            for dm in daymen:
+            for dm in active_daymen:
                 current_hours = sum(dm_work[dm]) / 2
+                max_h = get_max_hours(dm, constraints)
                 
-                if current_hours >= MAX_HOURS:
+                if current_hours >= max_h:
+                    continue
+                
+                # Tarkista rajoitteet
+                if not can_work_slot(dm, slot, d, constraints, current_hours):
                     continue
                 
                 score = 0
@@ -578,7 +804,8 @@ def generate_schedule(days_data):
                 if not stcw_ok:
                     continue
                 
-                score += (MAX_HOURS - current_hours) * 10
+                max_h = get_max_hours(dm, constraints)
+                score += (max_h - current_hours) * 10
                 
                 if score > best_score:
                     best_score = score
@@ -589,10 +816,12 @@ def generate_schedule(days_data):
                 dm_ops[best_dm][slot] = True
         
         # 3.2: Täytä loput tunnit 08:00 alkaen
-        for dm in daymen:
+        for dm in active_daymen:
             current_hours = sum(dm_work[dm]) / 2
+            min_h = get_min_hours(dm, constraints)
+            max_h = get_max_hours(dm, constraints)
             
-            if current_hours >= MIN_HOURS:
+            if current_hours >= min_h:
                 continue
             
             night_work_slots = sum(1 for s in range(0, NORMAL_START) if dm_work[dm][s])
@@ -607,7 +836,11 @@ def generate_schedule(days_data):
                 
                 if last_night_slot >= 0 and last_night_slot < NORMAL_START - 1:
                     for s in range(last_night_slot + 1, NORMAL_START):
-                        if current_hours >= MIN_HOURS:
+                        if current_hours >= min_h:
+                            break
+                        if current_hours >= max_h:
+                            break
+                        if not can_work_slot(dm, s, d, constraints, current_hours):
                             break
                         dm_work[dm][s] = True
                         if op_start <= s < min(op_end, 48):
@@ -618,7 +851,7 @@ def generate_schedule(days_data):
             
             slot = NORMAL_START
             
-            while current_hours < MIN_HOURS and slot < NORMAL_END:
+            while current_hours < min_h and slot < NORMAL_END:
                 if LUNCH_START <= slot < LUNCH_END:
                     slot += 1
                     continue
@@ -626,6 +859,14 @@ def generate_schedule(days_data):
                 if dm_work[dm][slot]:
                     slot += 1
                     continue
+                
+                # Tarkista rajoitteet
+                if not can_work_slot(dm, slot, d, constraints, current_hours):
+                    slot += 1
+                    continue
+                
+                if current_hours >= max_h:
+                    break
                 
                 dm_work[dm][slot] = True
                 if op_start <= slot < min(op_end, 48):
@@ -635,7 +876,7 @@ def generate_schedule(days_data):
         
         # 3.3: Varmista op-kattavuus uudelleen
         for slot in op_inside_slots:
-            workers_in_slot = [dm for dm in daymen if dm_work[dm][slot]]
+            workers_in_slot = [dm for dm in active_daymen if dm_work[dm][slot]]
             
             if len(workers_in_slot) >= 1:
                 for dm in workers_in_slot:
@@ -645,10 +886,15 @@ def generate_schedule(days_data):
             best_dm = None
             best_score = -9999
             
-            for dm in daymen:
+            for dm in active_daymen:
                 current_hours = sum(dm_work[dm]) / 2
+                max_h = get_max_hours(dm, constraints)
                 
-                if current_hours >= MAX_HOURS:
+                if current_hours >= max_h:
+                    continue
+                
+                # Tarkista rajoitteet
+                if not can_work_slot(dm, slot, d, constraints, current_hours):
                     continue
                 
                 score = 0
@@ -658,7 +904,7 @@ def generate_schedule(days_data):
                 if slot < 47 and dm_work[dm][slot + 1]:
                     score += 200
                 
-                score += (MAX_HOURS - current_hours) * 10
+                score += (max_h - current_hours) * 10
                 
                 if score > best_score:
                     best_score = score
@@ -669,9 +915,10 @@ def generate_schedule(days_data):
                 dm_ops[best_dm][slot] = True
         
         # 3.4: Täytä turhat aukot blokkien välissä
-        for dm in daymen:
+        for dm in active_daymen:
             work = dm_work[dm]
             blocks = get_work_blocks(work)
+            max_h = get_max_hours(dm, constraints)
             
             for i in range(len(blocks) - 1):
                 _, block1_end = blocks[i]
@@ -685,8 +932,10 @@ def generate_schedule(days_data):
                     for s in range(block1_end, block2_start):
                         if LUNCH_START <= s < LUNCH_END:
                             continue
-                        if current_hours >= MAX_HOURS:
+                        if current_hours >= max_h:
                             break
+                        if not can_work_slot(dm, s, d, constraints, current_hours):
+                            continue
                         work[s] = True
                         if op_start <= s < min(op_end, 48):
                             dm_ops[dm][s] = True
@@ -696,9 +945,10 @@ def generate_schedule(days_data):
         # VAIHE 4: TÄYTÄ AUKOT (max 1h aukot)
         # ====================================================================
         
-        for dm in daymen:
+        for dm in active_daymen:
             work = dm_work[dm]
             blocks = get_work_blocks(work)
+            max_h = get_max_hours(dm, constraints)
             
             for i in range(len(blocks) - 1):
                 _, block1_end = blocks[i]
