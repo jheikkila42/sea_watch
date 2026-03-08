@@ -12,7 +12,7 @@ import pandas as pd
 import streamlit as st
 
 # Sea Watch moduulit
-import sea_watch_16 as sw
+import sea_watch_17 as sw
 from schedule_analyzer import analyze_schedule, format_analysis_report, get_analysis_for_llm
 from llm_agent import create_agent
 from constraint_parser import create_parser
