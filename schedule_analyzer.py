@@ -11,16 +11,16 @@ Analysoi generoituja työvuoroja ja tunnistaa:
 """
 
 from typing import Dict, List, Any
-from sea_watch_16 import (
-    check_stcw, 
-    get_work_ranges, 
+from sea_watch_17 import (
+    check_stcw_at_slot,
+    get_work_ranges,
     slot_to_time_str,
-    NORMAL_START, 
-    NORMAL_END, 
-    LUNCH_START, 
+    NORMAL_START,
+    NORMAL_END,
+    LUNCH_START,
     LUNCH_END,
     MIN_HOURS,
-    MAX_HOURS
+    MAX_HOURS,
 )
 
 
@@ -53,11 +53,14 @@ def analyze_worker_day(worker: str, day_idx: int, day_data: Dict,
     # 2. Tarkista STCW (jos edellinen päivä saatavilla)
     if prev_day_data is not None:
         prev_work = prev_day_data['work_slots']
-        stcw_result = check_stcw(prev_work, work)
-        
-        if not stcw_result['ok']:
-            for issue in stcw_result['issues']:
-                issues.append(f"STCW: {issue}")
+        combined = prev_work + work
+        stcw_result = check_stcw_at_slot(combined, len(combined) - 1)
+
+        if stcw_result['status'] != "OK":
+            issues.append(
+                f"STCW: {stcw_result['status']} (total_rest={stcw_result['total_rest']}h, "
+                f"longest_rest={stcw_result['longest_rest']}h)"
+            )
     
     # 3. Tarkista turhat tauot (yli 1h aukot työjaksojen välissä)
     gaps = find_work_gaps(work)
@@ -432,7 +435,7 @@ def get_analysis_for_llm(analysis: Dict) -> Dict[str, Any]:
 # ============================================================================
 
 if __name__ == "__main__":
-    from sea_watch_16 import generate_schedule
+    from sea_watch_17 import generate_schedule
     
     # Testitapaus
     days_data = [
