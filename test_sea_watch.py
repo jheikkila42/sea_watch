@@ -325,10 +325,10 @@ class TestSTCW:
 # ---------------------------------------------------------------------
 
 class TestWatchmen:
-    """Watchman-rakenne säilyy nykyisessäkin versiossa."""
+    """Watchmanien 4-on-8-off vuorot."""
 
-    def test_watchmen_have_valid_slot_structure(self):
-        """Watchmaneilla on päiväkohtainen 48-slotin työlista."""
+    def test_watchman_4_on_8_off_pattern(self):
+        """Watchmanit tekevät 8h päivässä (4-on / 8-off -kierto)."""
         all_days = run_scenario(
             arrival_hour=None, departure_hour=None,
             op_start_hour=8, op_end_hour=17
@@ -415,6 +415,43 @@ class TestSpecialCases:
             hours = sum(work) / 2
             assert 8.0 <= hours <= 9.0, f"{w}: {hours}h (pitäisi ~8.5h)"
     
+    def test_continuous_night_prefers_evening_worker_then_ph2(self):
+        """Jatkuvassa yössä iltavuoron tekijä jatkaa 01:00 asti, sitten PH2 ottaa loppuyön."""
+        days_data = [
+            {
+                'arrival_hour': 18,
+                'arrival_minute': 0,
+                'departure_hour': None,
+                'departure_minute': 0,
+                'port_op_start_hour': 19,
+                'port_op_start_minute': 0,
+                'port_op_end_hour': 0,
+                'port_op_end_minute': 0,
+            },
+            {
+                'arrival_hour': None,
+                'arrival_minute': 0,
+                'departure_hour': None,
+                'departure_minute': 0,
+                'port_op_start_hour': 0,
+                'port_op_start_minute': 0,
+                'port_op_end_hour': 8,
+                'port_op_end_minute': 0,
+            },
+        ]
+
+        _, all_days, _ = generate_schedule(days_data)
+
+        # Päivä 1 ilta: EU tekee viimeiset slotit ennen keskiyötä
+        assert all_days['Dayman EU'][0]['work_slots'][47] is True
+
+        # Päivä 2: 00:00-01:00 EU, 01:00-08:00 PH2
+        assert all_days['Dayman EU'][1]['work_slots'][0] is True
+        assert all_days['Dayman EU'][1]['work_slots'][1] is True
+        assert all_days['Dayman PH2'][1]['work_slots'][2] is True
+        assert all_days['Dayman PH2'][1]['work_slots'][15] is True
+        assert all_days['Dayman PH1'][1]['work_slots'][0] is False
+
     def test_night_operation(self):
         """Yöoperaatio (menee keskiyön yli)"""
         all_days = run_scenario(
