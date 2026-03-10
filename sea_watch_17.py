@@ -326,8 +326,6 @@ def analyze_continuous_nights(days_data):
         if curr_op_end == 0 and next_op_start == 0:
             continuous_nights.append({
                 'day_index': d,
-                'early_worker': 'Dayman PH1',
-                'late_worker': 'Dayman PH2'
             })
     
     return continuous_nights
@@ -980,18 +978,60 @@ def generate_bosun_schedule(times):
     }
 
 
-def generate_watchman_schedule():
+def generate_watchman_schedule(worker):
     """
-    Generoi watchmanin työvuorot (tyhjä).
+    Generoi watchmanin 4-on / 8-off -vuoron (8h/vrk).
+
+    Watchman 1: 00-04, 12-16
+    Watchman 2: 04-08, 16-20
+    Watchman 3: 08-12, 20-24
     """
+    work_slots = [False] * 48
+
+    watch_blocks = {
+        'Watchman 1': [(0, 8), (24, 32)],
+        'Watchman 2': [(8, 16), (32, 40)],
+        'Watchman 3': [(16, 24), (40, 48)],
+    }
+
+    for start, end in watch_blocks.get(worker, []):
+        add_block(work_slots, start, end)
+
     return {
-        'work_slots': [False] * 48,
+        'work_slots': work_slots,
         'arrival_slots': [False] * 48,
         'departure_slots': [False] * 48,
         'port_op_slots': [False] * 48,
         'sluice_slots': [False] * 48,
         'shifting_slots': [False] * 48
     }
+
+
+def choose_continuous_night_workers(prev_day_daymen_work):
+    """
+    Valitse jatkuvan yön tekijät:
+    - early_worker: se dayman, joka teki edellisen päivän viimeisen iltaslotin
+    - late_worker: ensisijaisesti Dayman PH2
+    """
+    daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+
+    latest_worker = None
+    latest_slot = -1
+    for dm in daymen:
+        work = prev_day_daymen_work.get(dm, [False] * 48)
+        for slot in range(47, -1, -1):
+            if work[slot]:
+                if slot > latest_slot:
+                    latest_slot = slot
+                    latest_worker = dm
+                break
+
+    early_worker = latest_worker or 'Dayman EU'
+    late_worker = 'Dayman PH2'
+    if late_worker == early_worker:
+        late_worker = 'Dayman PH1'
+
+    return early_worker, late_worker
 
 
 # ============================================================================
@@ -1035,15 +1075,17 @@ def generate_schedule(days_data, constraints=None):
         continuous_night_info = None
         for night_info in continuous_nights:
             if night_info['day_index'] == day_idx - 1:
-                prev_early = all_days[night_info['early_worker']][day_idx - 1]['work_slots']
-                prev_late = all_days[night_info['late_worker']][day_idx - 1]['work_slots']
-                split_slot = choose_night_split_slot(
-                    prev_early, prev_late, 
-                    times['arrival_start'], times['departure_start']
-                )
+                prev_day_daymen_work = {
+                    dm: all_days[dm][day_idx - 1]['work_slots']
+                    for dm in DAYMEN
+                }
+                early_worker, late_worker = choose_continuous_night_workers(prev_day_daymen_work)
+
+                split_slot = time_to_slot(1, 0)
+
                 continuous_night_info = {
-                    'early_worker': night_info['early_worker'],
-                    'late_worker': night_info['late_worker'],
+                    'early_worker': early_worker,
+                    'late_worker': late_worker,
                     'split_slot': split_slot
                 }
                 break
@@ -1100,7 +1142,7 @@ def generate_schedule(days_data, constraints=None):
         
         # Watchmanit
         for w in ['Watchman 1', 'Watchman 2', 'Watchman 3']:
-            all_days[w].append(generate_watchman_schedule())
+            all_days[w].append(generate_watchman_schedule(w))
     
     # Rakenna Excel
     wb, report = build_workbook_and_report(all_days, num_days, WORKERS)
