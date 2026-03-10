@@ -11,7 +11,7 @@ Analysoi generoituja työvuoroja ja tunnistaa:
 """
 
 from typing import Dict, List, Any
-from sea_watch_16 import (
+from sea_watch_17 import (
     check_stcw, 
     get_work_ranges, 
     slot_to_time_str,
