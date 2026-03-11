@@ -23,9 +23,10 @@ def analyze_stcw_from_work_starts(work_48h):
         if not is_work:
             cur += 1
         elif cur:
-            rest_periods.append(cur / 2)
+            if cur >= 2:
+                rest_periods.append(cur / 2)
             cur = 0
-    if cur:
+    if cur >= 2:
         rest_periods.append(cur / 2)
 
     if len(rest_periods) >= 2 and (not window[0]) and (not window[-1]):
