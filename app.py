@@ -592,7 +592,7 @@ def main():
         "📝 Automaattinen syöttö", 
         "✋ Päivä 1 manuaalinen",
         "📊 Analyysi",
-        "💬 AI Chat"
+        "💬 AII Chat"
     ])
     
     # Tab 1: Automaattinen syöttö
