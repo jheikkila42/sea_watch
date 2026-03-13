@@ -218,19 +218,27 @@ def convert_manual_df_to_slots(df: pd.DataFrame):
     return manual
 
 
-def create_editable_work_df(all_days, day_idx):
+def create_editable_work_df(all_days, day_idx, visible_cols=None):
+    cols = visible_cols or DISPLAY_TIME_COLS
     data = {"Työntekijä": WORKERS}
-    for col_idx, col in enumerate(DISPLAY_TIME_COLS):
+    for col in cols:
+        col_idx = DISPLAY_TIME_COLS.index(col)
         data[col] = [bool(all_days[w][day_idx]["work_slots"][col_idx]) for w in WORKERS]
     return pd.DataFrame(data)
 
 
-def apply_edited_work_df(all_days, day_idx, edited_df):
+def apply_edited_work_df(all_days, day_idx, edited_df, visible_cols=None):
+    cols = visible_cols or DISPLAY_TIME_COLS
+    col_indexes = {col: DISPLAY_TIME_COLS.index(col) for col in cols}
+
     for _, row in edited_df.iterrows():
         worker = row["Työntekijä"]
         if worker not in all_days:
             continue
-        all_days[worker][day_idx]["work_slots"] = [bool(row[t]) for t in DISPLAY_TIME_COLS]
+
+        slots = all_days[worker][day_idx]["work_slots"]
+        for col in cols:
+            slots[col_indexes[col]] = bool(row[col])
 
 
 def store_generated_result(wb, all_days, days_data, num_days, from_post_edit=False):
@@ -289,17 +297,33 @@ def render_post_generation_editor():
     num_days = st.session_state.generated_num_days
     all_days = st.session_state.generated_all_days
 
+    view_mode = st.radio(
+        "Näkymä",
+        ["Koko päivä", "6 tunnin jakso"],
+        horizontal=True,
+        key="post_edit_view_mode",
+    )
+
+    if view_mode == "6 tunnin jakso":
+        start_hour = st.slider("Jakson alkutunti", min_value=0, max_value=18, value=6, step=1, key="post_edit_start_hour")
+        start_idx = start_hour * 2
+        end_idx = start_idx + 12
+        visible_cols = DISPLAY_TIME_COLS[start_idx:end_idx]
+        st.caption(f"Näytetään aikaikkuna {visible_cols[0]}–{visible_cols[-1]}")
+    else:
+        visible_cols = DISPLAY_TIME_COLS
+
     edited_dfs = []
     for d in range(num_days):
         st.markdown(f"**Muokattava päivä {d+1}**")
-        base_df = create_editable_work_df(all_days, d)
+        base_df = create_editable_work_df(all_days, d, visible_cols=visible_cols)
         edited_df = st.data_editor(
             base_df,
             hide_index=True,
             use_container_width=True,
             key=f"post_edit_day_{d}",
             disabled=["Työntekijä"],
-            column_config={c: st.column_config.CheckboxColumn(c, default=False, width="small") for c in DISPLAY_TIME_COLS},
+            column_config={c: st.column_config.CheckboxColumn(c, default=False, width="small") for c in visible_cols},
         )
         edited_dfs.append(edited_df)
 
@@ -322,7 +346,7 @@ def render_post_generation_editor():
     if regenerate_clicked:
         updated_all_days = copy.deepcopy(st.session_state.generated_all_days)
         for d, edited_df in enumerate(edited_dfs):
-            apply_edited_work_df(updated_all_days, d, edited_df)
+            apply_edited_work_df(updated_all_days, d, edited_df, visible_cols=visible_cols)
         wb = build_workbook_compat(updated_all_days, num_days, WORKERS)
         if wb is None:
             st.error("Excelin uudelleenrakennus epäonnistui.")
