@@ -245,13 +245,6 @@ def store_generated_result(wb, all_days, days_data, num_days):
 # ============================================================================
 
 def render_results(num_days, wb, all_days):
-    st.subheader("📋 Työvuorot")
-    for d in range(num_days):
-        st.markdown(f"**Päivä {d+1}**")
-        df = create_schedule_table(all_days, d, WORKERS)
-        st.dataframe(style_schedule_table(df), use_container_width=True, height=300)
-        st.markdown("---")
-
     st.subheader("📊 STCW-lepoaika-analyysi")
     if check_stcw_at_slot is None:
         st.info("STCW-analyysifunktio ei käytettävissä.")
