@@ -584,8 +584,8 @@ def main():
     tab_auto, tab_manual, tab_analysis, tab_chat = st.tabs([
         "📝 Automaattinen syöttö", 
         "✋ Päivä 1 manuaalinen",
-        "📊 Analyysi",
-        "💬 AII Chat"
+        "📊 Lepoaikarikkeet",
+        "💬 AI Chat"
     ])
     
     # Tab 1: Automaattinen syöttö
