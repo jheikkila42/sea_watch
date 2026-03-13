@@ -68,6 +68,8 @@ def init_session_state():
         st.session_state.agent = None
     if "parser" not in st.session_state:
         st.session_state.parser = None
+    if "post_edit_download_ready" not in st.session_state:
+        st.session_state.post_edit_download_ready = False
 
 
 def init_agent_and_parser():
@@ -231,11 +233,12 @@ def apply_edited_work_df(all_days, day_idx, edited_df):
         all_days[worker][day_idx]["work_slots"] = [bool(row[t]) for t in DISPLAY_TIME_COLS]
 
 
-def store_generated_result(wb, all_days, days_data, num_days):
+def store_generated_result(wb, all_days, days_data, num_days, from_post_edit=False):
     st.session_state.generated_wb = wb
     st.session_state.generated_all_days = all_days
     st.session_state.generated_days_data = days_data
     st.session_state.generated_num_days = num_days
+    st.session_state.post_edit_download_ready = from_post_edit
     # Analysoi heti
     st.session_state.analysis = analyze_schedule(all_days, days_data)
 
@@ -281,26 +284,40 @@ def render_post_generation_editor():
         return
 
     st.markdown("## ✏️ Muokkaa vuoroja generoinnin jälkeen")
-    st.caption("Klikkaa soluja muuttaaksesi työslotteja. Paina 'Generoi uudelleen' päivittääksesi.")
+    st.caption("Klikkaa soluja muuttaaksesi työslotteja. Paina 'Generoi uudelleen' päivittääksesi, ja lataa uusi Excel sen jälkeen.")
 
     num_days = st.session_state.generated_num_days
     all_days = st.session_state.generated_all_days
 
-    with st.form("post_generation_edit_form"):
-        edited_dfs = []
-        for d in range(num_days):
-            st.markdown(f"**Muokattava päivä {d+1}**")
-            base_df = create_editable_work_df(all_days, d)
-            edited_df = st.data_editor(
-                base_df,
-                hide_index=True,
-                use_container_width=True,
-                key=f"post_edit_day_{d}",
-                disabled=["Työntekijä"],
-                column_config={c: st.column_config.CheckboxColumn(c, default=False, width="small") for c in DISPLAY_TIME_COLS},
-            )
-            edited_dfs.append(edited_df)
-        regenerate_clicked = st.form_submit_button("🔁 Generoi uudelleen (päivitä Excel)")
+    edited_dfs = []
+    for d in range(num_days):
+        st.markdown(f"**Muokattava päivä {d+1}**")
+        base_df = create_editable_work_df(all_days, d)
+        edited_df = st.data_editor(
+            base_df,
+            hide_index=True,
+            use_container_width=True,
+            key=f"post_edit_day_{d}",
+            disabled=["Työntekijä"],
+            column_config={c: st.column_config.CheckboxColumn(c, default=False, width="small") for c in DISPLAY_TIME_COLS},
+        )
+        edited_dfs.append(edited_df)
+
+    action_col1, action_col2 = st.columns([2, 3])
+    with action_col1:
+        regenerate_clicked = st.button("🔁 Generoi uudelleen (päivitä Excel)", key="post_edit_regenerate")
+    with action_col2:
+        buffer = io.BytesIO()
+        st.session_state.generated_wb.save(buffer)
+        buffer.seek(0)
+        st.download_button(
+            label="📥 Lataa uusi Excel",
+            data=buffer,
+            file_name="tyovuorot_paivitetty.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            disabled=not st.session_state.post_edit_download_ready,
+            key="download_updated_excel_post_edit",
+        )
 
     if regenerate_clicked:
         updated_all_days = copy.deepcopy(st.session_state.generated_all_days)
@@ -310,8 +327,17 @@ def render_post_generation_editor():
         if wb is None:
             st.error("Excelin uudelleenrakennus epäonnistui.")
         else:
-            store_generated_result(wb, updated_all_days, st.session_state.generated_days_data, num_days)
+            store_generated_result(
+                wb,
+                updated_all_days,
+                st.session_state.generated_days_data,
+                num_days,
+                from_post_edit=True,
+            )
             st.success("Vuorot päivitetty.")
+
+    if not st.session_state.post_edit_download_ready:
+        st.caption("Lataa uusi Excel aktivoituu, kun vuorot on generoitu uudelleen.")
 
 
 # ============================================================================
@@ -581,11 +607,12 @@ def main():
     st.title("🛳️ Sea Watch - Työvuorolistageneraattori")
     
     # Välilehdet
-    tab_auto, tab_manual, tab_analysis, tab_chat = st.tabs([
+    tab_auto, tab_manual, tab_edit, tab_analysis, tab_chat = st.tabs([
         "📝 Automaattinen syöttö", 
         "✋ Päivä 1 manuaalinen",
-        "📊 Lepoaikarikkeet",
-        "💬 AI Chat"
+        "✏️ Muokkaa vuoroja",
+        "📊 Analyysi",
+        "💬 AII Chat"
     ])
     
     # Tab 1: Automaattinen syöttö
@@ -615,7 +642,6 @@ def main():
                 st.session_state.generated_wb,
                 st.session_state.generated_all_days
             )
-            render_post_generation_editor()
     
     # Tab 2: Manuaalinen päivä 1
     with tab_manual:
@@ -660,11 +686,18 @@ def main():
             store_generated_result(wb, all_days, days_data, num_days)
             st.success("✅ Työvuorot generoitu!")
     
-    # Tab 3: Analyysi
+    # Tab 3: Muokkaa vuoroja
+    with tab_edit:
+        if st.session_state.generated_all_days is None:
+            st.info("Generoi ensin työvuorot, jotta voit muokata niitä.")
+        else:
+            render_post_generation_editor()
+
+    # Tab 4: Analyysi
     with tab_analysis:
         render_analysis_tab()
     
-    # Tab 4: AI Chat
+    # Tab 5: AI Chat
     with tab_chat:
         render_chat_tab()
 
