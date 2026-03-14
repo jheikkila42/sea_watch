@@ -313,35 +313,22 @@ def render_post_generation_editor():
     else:
         visible_cols = DISPLAY_TIME_COLS
 
-    edited_dfs = []
-    for d in range(num_days):
-        st.markdown(f"**Muokattava päivä {d+1}**")
-        base_df = create_editable_work_df(all_days, d, visible_cols=visible_cols)
-        edited_df = st.data_editor(
-            base_df,
-            hide_index=True,
-            use_container_width=True,
-            key=f"post_edit_day_{d}",
-            disabled=["Työntekijä"],
-            column_config={c: st.column_config.CheckboxColumn(c, default=False, width="small") for c in visible_cols},
-        )
-        edited_dfs.append(edited_df)
+    with st.form("post_generation_edit_form"):
+        edited_dfs = []
+        for d in range(num_days):
+            st.markdown(f"**Muokattava päivä {d+1}**")
+            base_df = create_editable_work_df(all_days, d, visible_cols=visible_cols)
+            edited_df = st.data_editor(
+                base_df,
+                hide_index=True,
+                use_container_width=True,
+                key=f"post_edit_day_{d}",
+                disabled=["Työntekijä"],
+                column_config={c: st.column_config.CheckboxColumn(c, default=False, width="small") for c in visible_cols},
+            )
+            edited_dfs.append(edited_df)
 
-    action_col1, action_col2 = st.columns([2, 3])
-    with action_col1:
-        regenerate_clicked = st.button("🔁 Generoi uudelleen (päivitä Excel)", key="post_edit_regenerate")
-    with action_col2:
-        buffer = io.BytesIO()
-        st.session_state.generated_wb.save(buffer)
-        buffer.seek(0)
-        st.download_button(
-            label="📥 Lataa uusi Excel",
-            data=buffer,
-            file_name="tyovuorot_paivitetty.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            disabled=not st.session_state.post_edit_download_ready,
-            key="download_updated_excel_post_edit",
-        )
+        regenerate_clicked = st.form_submit_button("🔁 Generoi uudelleen (päivitä Excel)")
 
     if regenerate_clicked:
         updated_all_days = copy.deepcopy(st.session_state.generated_all_days)
@@ -359,6 +346,18 @@ def render_post_generation_editor():
                 from_post_edit=True,
             )
             st.success("Vuorot päivitetty.")
+
+    buffer = io.BytesIO()
+    st.session_state.generated_wb.save(buffer)
+    buffer.seek(0)
+    st.download_button(
+        label="📥 Lataa uusi Excel",
+        data=buffer,
+        file_name="tyovuorot_paivitetty.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        disabled=not st.session_state.post_edit_download_ready,
+        key="download_updated_excel_post_edit",
+    )
 
     if not st.session_state.post_edit_download_ready:
         st.caption("Lataa uusi Excel aktivoituu, kun vuorot on generoitu uudelleen.")
