@@ -256,26 +256,6 @@ def store_generated_result(wb, all_days, days_data, num_days, from_post_edit=Fal
 # ============================================================================
 
 def render_results(num_days, wb, all_days):
-    st.subheader("📊 STCW-lepoaika-analyysi")
-    if check_stcw_at_slot is None:
-        st.info("STCW-analyysifunktio ei käytettävissä.")
-    else:
-        stcw_data = []
-        for d in range(1, num_days):
-            for w in WORKERS:
-                prev = all_days[w][d - 1]["work_slots"]
-                work = all_days[w][d]["work_slots"]
-                ana = check_stcw_at_slot(prev + work, 95)
-                stcw_data.append({
-                    "Päivä": d + 1,
-                    "Työntekijä": w,
-                    "Työtunnit": sum(work) / 2,
-                    "Lepo (h)": ana["total_rest"],
-                    "Pisin lepo (h)": ana["longest_rest"],
-                    "Status": "✓ OK" if ana["status"] == "OK" else "⚠ VAROITUS",
-                })
-        st.dataframe(pd.DataFrame(stcw_data), use_container_width=True)
-
     buffer = io.BytesIO()
     wb.save(buffer)
     buffer.seek(0)
