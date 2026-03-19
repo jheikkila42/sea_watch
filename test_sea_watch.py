@@ -507,6 +507,27 @@ class TestRegressions:
             assert 8.0 <= hours <= 10.0, \
                 f"{w}: {hours}h (liian vähän/paljon)"
 
+    def test_excel_hours_column_uses_formula(self):
+        """Excelin tuntisarakkeessa on kaava, joka päivittyy muokkauksista."""
+        days_data = [
+            {
+                'arrival_hour': 8,
+                'arrival_minute': 0,
+                'departure_hour': 19,
+                'departure_minute': 0,
+                'port_op_start_hour': 10,
+                'port_op_start_minute': 0,
+                'port_op_end_hour': 18,
+                'port_op_end_minute': 0,
+            }
+        ]
+
+        wb, _, _ = generate_schedule(days_data)
+        ws = wb["Työvuorot"]
+
+        assert ws["AX3"].value == '=COUNTA(B3:AW3)/2'
+        assert ws["AX3"].number_format == '0.0'
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

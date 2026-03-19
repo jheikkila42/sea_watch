@@ -1270,7 +1270,9 @@ def build_workbook_and_report(all_days, num_days, workers):
                 cell.alignment = Alignment(horizontal='center')
                 cell.font = Font(size=8)
             
-            ws.cell(row=current_row, column=50, value=hours)
+            hours_cell = ws.cell(row=current_row, column=50)
+            hours_cell.value = f'=COUNTA(B{current_row}:AW{current_row})/2'
+            hours_cell.number_format = '0.0'
             current_row += 1
             
             ranges = get_work_ranges(work)
