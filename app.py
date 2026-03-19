@@ -113,6 +113,41 @@ def parse_optional_time(label: str, key: str):
     return h, m
 
 
+def init_operation_count(key: str, default: int = 1):
+    """Varmistaa session statessa toistettavan operaatiolohkon määrän."""
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+
+def parse_operation_entries(section_key: str, day: int, operation_key: str, label: str, default_count: int = 1):
+    """Renderöi toistettavat aikakentät yhdelle operaatiotyypille."""
+    count_key = f"{section_key}_{operation_key}_count_{day}"
+    init_operation_count(count_key, default=default_count)
+
+    entries = []
+    for idx in range(st.session_state[count_key]):
+        suffix = f" #{idx + 1}" if st.session_state[count_key] > 1 else ""
+        h, m = parse_optional_time(
+            f"{label}{suffix}",
+            key=f"{section_key}_{operation_key}_{day}_{idx}",
+        )
+        if h is not None:
+            entries.append({"hour": h, "minute": m or 0})
+
+    if st.button(f"➕ Lisää uusi {label.lower()}", key=f"add_{count_key}"):
+        st.session_state[count_key] += 1
+        st.rerun()
+
+    return entries
+
+
+def first_operation_entry(entries):
+    """Palauttaa ensimmäisen operaation vanhan tietorakenteen yhteensopivuutta varten."""
+    if entries:
+        return entries[0]["hour"], entries[0]["minute"]
+    return None, 0
+
+
 # ============================================================================
 # PÄIVIEN DATA
 # ============================================================================
@@ -126,24 +161,41 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
 
             with row1_col1:
                 st.markdown("#### Tulo ja lähtö")
-                arr_h, arr_m = parse_optional_time("Satamaan tuloaika (HH:MM)", key=f"{key_prefix}_arr_{day}")
-                dep_h, dep_m = parse_optional_time("Satamasta lähtöaika (HH:MM)", key=f"{key_prefix}_dep_{day}")
+                arrivals = parse_operation_entries(key_prefix, day, "arr", "Satamaan tuloaika (HH:MM)")
+                departures = parse_operation_entries(key_prefix, day, "dep", "Satamasta lähtöaika (HH:MM)")
 
             with row1_col2:
                 st.markdown("#### Satamaoperaatiot")
-                op_s_h, op_s_m = parse_optional_time("Satamaoperaation alku (HH:MM)", key=f"{key_prefix}_opstart_{day}")
-                op_e_h, op_e_m = parse_optional_time("Satamaoperaation loppu (HH:MM)", key=f"{key_prefix}_opend_{day}")
+                port_op_starts = parse_operation_entries(key_prefix, day, "opstart", "Satamaoperaation alku (HH:MM)")
+                port_op_ends = parse_operation_entries(key_prefix, day, "opend", "Satamaoperaation loppu (HH:MM)")
 
             with row2_col1:
                 st.markdown("#### Slussi")
-                sluice_arr_h, sluice_arr_m = parse_optional_time("Slussi - tulo alku (HH:MM, kesto 2h)", key=f"{key_prefix}_sluice_arr_{day}")
-                sluice_dep_h, sluice_dep_m = parse_optional_time("Slussi - lähtö alku (HH:MM, kesto 2h)", key=f"{key_prefix}_sluice_dep_{day}")
+                sluice_arrivals = parse_operation_entries(key_prefix, day, "sluice_arr", "Slussi - tulo alku (HH:MM, kesto 2h)")
+                sluice_departures = parse_operation_entries(key_prefix, day, "sluice_dep", "Slussi - lähtö alku (HH:MM, kesto 2h)")
 
             with row2_col2:
                 st.markdown("#### Shiftaus")
-                shifting_h, shifting_m = parse_optional_time("Shiftaus alku (HH:MM, kesto 1h)", key=f"{key_prefix}_shifting_{day}")
+                shiftings = parse_operation_entries(key_prefix, day, "shifting", "Shiftaus alku (HH:MM, kesto 1h)")
+
+            arr_h, arr_m = first_operation_entry(arrivals)
+            dep_h, dep_m = first_operation_entry(departures)
+            op_s_h, op_s_m = first_operation_entry(port_op_starts)
+            op_e_h, op_e_m = first_operation_entry(port_op_ends)
+            sluice_arr_h, sluice_arr_m = first_operation_entry(sluice_arrivals)
+            sluice_dep_h, sluice_dep_m = first_operation_entry(sluice_departures)
+            shifting_h, shifting_m = first_operation_entry(shiftings)
 
             days.append({
+                "arrivals": arrivals,
+                "departures": departures,
+                "port_operations": [
+                    {"start_hour": start["hour"], "start_minute": start["minute"], "end_hour": end["hour"], "end_minute": end["minute"]}
+                    for start, end in zip(port_op_starts, port_op_ends)
+                ],
+                "sluice_arrivals": sluice_arrivals,
+                "sluice_departures": sluice_departures,
+                "shiftings": shiftings,
                 "arrival_hour": arr_h, "arrival_minute": arr_m or 0,
                 "departure_hour": dep_h, "departure_minute": dep_m or 0,
                 "port_op_start_hour": op_s_h, "port_op_start_minute": op_s_m or 0,

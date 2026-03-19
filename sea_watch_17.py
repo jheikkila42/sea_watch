@@ -320,8 +320,10 @@ def analyze_continuous_nights(days_data):
         curr = days_data[d]
         next_day = days_data[d + 1]
         
-        curr_op_end = curr.get('port_op_end_hour')
-        next_op_start = next_day.get('port_op_start_hour')
+        curr_port_ops = curr.get('port_operations') or []
+        next_port_ops = next_day.get('port_operations') or []
+        curr_op_end = curr_port_ops[-1].get('end_hour') if curr_port_ops else curr.get('port_op_end_hour')
+        next_op_start = next_port_ops[0].get('start_hour') if next_port_ops else next_day.get('port_op_start_hour')
         
         if curr_op_end == 0 and next_op_start == 0:
             continuous_nights.append({
@@ -387,63 +389,121 @@ def parse_day_times(info):
     Parsii päivän ajat sloteiksi.
     Palauttaa dictin kaikista relevanteista sloteista.
     """
-    op_start_h = info.get('port_op_start_hour')
-    op_start_m = info.get('port_op_start_minute', 0)
-    op_end_h = info.get('port_op_end_hour')
-    op_end_m = info.get('port_op_end_minute', 0)
-    
-    arrival_h = info.get('arrival_hour')
-    arrival_m = info.get('arrival_minute', 0)
-    departure_h = info.get('departure_hour')
-    departure_m = info.get('departure_minute', 0)
-    
-    sluice_arr_h = info.get('sluice_arrival_hour')
-    sluice_arr_m = info.get('sluice_arrival_minute', 0)
-    sluice_dep_h = info.get('sluice_departure_hour')
-    sluice_dep_m = info.get('sluice_departure_minute', 0)
-    shifting_h = info.get('shifting_hour')
-    shifting_m = info.get('shifting_minute', 0)
-    
-    # Op-ajat
-    if op_start_h is not None:
-        op_start = time_to_slot(op_start_h, op_start_m)
-        if op_end_h is not None and op_end_h < op_start_h:
-            op_end = 48
-        elif op_end_h == 0 and op_start_h > 0:
-            op_end = 48
-        elif op_end_h is not None:
-            op_end = time_to_slot(op_end_h, op_end_m)
-        else:
-            op_end = NORMAL_END
+    port_operations_info = info.get('port_operations')
+    if port_operations_info:
+        port_operations = []
+        for operation in port_operations_info:
+            op_start_h = operation.get('start_hour')
+            op_start_m = operation.get('start_minute', 0)
+            op_end_h = operation.get('end_hour')
+            op_end_m = operation.get('end_minute', 0)
+            if op_start_h is None:
+                continue
+            op_start = time_to_slot(op_start_h, op_start_m)
+            if op_end_h is not None and op_end_h < op_start_h:
+                op_end = 48
+            elif op_end_h == 0 and op_start_h > 0:
+                op_end = 48
+            elif op_end_h is not None:
+                op_end = time_to_slot(op_end_h, op_end_m)
+            else:
+                op_end = NORMAL_END
+            port_operations.append((op_start, op_end))
     else:
-        op_start = NORMAL_START
-        op_end = NORMAL_END
-    
+        op_start_h = info.get('port_op_start_hour')
+        op_start_m = info.get('port_op_start_minute', 0)
+        op_end_h = info.get('port_op_end_hour')
+        op_end_m = info.get('port_op_end_minute', 0)
+        if op_start_h is not None:
+            op_start = time_to_slot(op_start_h, op_start_m)
+            if op_end_h is not None and op_end_h < op_start_h:
+                op_end = 48
+            elif op_end_h == 0 and op_start_h > 0:
+                op_end = 48
+            elif op_end_h is not None:
+                op_end = time_to_slot(op_end_h, op_end_m)
+            else:
+                op_end = NORMAL_END
+            port_operations = [(op_start, op_end)]
+        else:
+            port_operations = [(NORMAL_START, NORMAL_END)]
+
+    arrivals = info.get('arrivals')
+    if arrivals:
+        arrival_starts = [time_to_slot(entry['hour'], entry.get('minute', 0)) for entry in arrivals if entry.get('hour') is not None]
+    else:
+        arrival_h = info.get('arrival_hour')
+        arrival_m = info.get('arrival_minute', 0)
+        arrival_starts = [time_to_slot(arrival_h, arrival_m)] if arrival_h is not None else []
+
+    departures = info.get('departures')
+    if departures:
+        departure_starts = [time_to_slot(entry['hour'], entry.get('minute', 0)) for entry in departures if entry.get('hour') is not None]
+    else:
+        departure_h = info.get('departure_hour')
+        departure_m = info.get('departure_minute', 0)
+        departure_starts = [time_to_slot(departure_h, departure_m)] if departure_h is not None else []
+
+    sluice_arrivals = info.get('sluice_arrivals')
+    if sluice_arrivals:
+        sluice_arr_starts = [time_to_slot(entry['hour'], entry.get('minute', 0)) for entry in sluice_arrivals if entry.get('hour') is not None]
+    else:
+        sluice_arr_h = info.get('sluice_arrival_hour')
+        sluice_arr_m = info.get('sluice_arrival_minute', 0)
+        sluice_arr_starts = [time_to_slot(sluice_arr_h, sluice_arr_m)] if sluice_arr_h is not None else []
+
+    sluice_departures = info.get('sluice_departures')
+    if sluice_departures:
+        sluice_dep_starts = [time_to_slot(entry['hour'], entry.get('minute', 0)) for entry in sluice_departures if entry.get('hour') is not None]
+    else:
+        sluice_dep_h = info.get('sluice_departure_hour')
+        sluice_dep_m = info.get('sluice_departure_minute', 0)
+        sluice_dep_starts = [time_to_slot(sluice_dep_h, sluice_dep_m)] if sluice_dep_h is not None else []
+
+    shiftings = info.get('shiftings')
+    if shiftings:
+        shifting_starts = [time_to_slot(entry['hour'], entry.get('minute', 0)) for entry in shiftings if entry.get('hour') is not None]
+    else:
+        shifting_h = info.get('shifting_hour')
+        shifting_m = info.get('shifting_minute', 0)
+        shifting_starts = [time_to_slot(shifting_h, shifting_m)] if shifting_h is not None else []
+
+    op_start = min(start for start, _ in port_operations)
+    op_end = max(end for _, end in port_operations)
+
     return {
         'op_start': op_start,
         'op_end': op_end,
-        'arrival_start': time_to_slot(arrival_h, arrival_m) if arrival_h is not None else None,
-        'departure_start': time_to_slot(departure_h, departure_m) if departure_h is not None else None,
-        'sluice_arr_start': time_to_slot(sluice_arr_h, sluice_arr_m) if sluice_arr_h is not None else None,
-        'sluice_dep_start': time_to_slot(sluice_dep_h, sluice_dep_m) if sluice_dep_h is not None else None,
-        'shifting_start': time_to_slot(shifting_h, shifting_m) if shifting_h is not None else None
+        'op_ranges': port_operations,
+        'arrival_start': arrival_starts[0] if arrival_starts else None,
+        'arrival_starts': arrival_starts,
+        'departure_start': departure_starts[0] if departure_starts else None,
+        'departure_starts': departure_starts,
+        'sluice_arr_start': sluice_arr_starts[0] if sluice_arr_starts else None,
+        'sluice_arr_starts': sluice_arr_starts,
+        'sluice_dep_start': sluice_dep_starts[0] if sluice_dep_starts else None,
+        'sluice_dep_starts': sluice_dep_starts,
+        'shifting_start': shifting_starts[0] if shifting_starts else None,
+        'shifting_starts': shifting_starts,
     }
+
+
+def is_op_slot(times, slot):
+    """Palauttaa True jos slot kuuluu johonkin satamaoperaatiojaksoon."""
+    return any(start <= slot < min(end, 48) for start, end in times.get('op_ranges', []))
 
 
 def apply_constraint_slots(dm_work, dm_ops, daymen, day_idx, times, constraints):
     """
     Vaihe 0.5: Lisää pakolliset slotit rajoitteista (must_work_slot).
     """
-    op_start = times['op_start']
-    op_end = times['op_end']
-    
     for dm in daymen:
         if is_day_off(dm, day_idx, constraints):
             continue
         for slot in range(48):
             if must_work_slot(dm, slot, day_idx, constraints):
                 dm_work[dm][slot] = True
-                if op_start <= slot < min(op_end, 48):
+                if is_op_slot(times, slot):
                     dm_ops[dm][slot] = True
 
 
@@ -451,98 +511,83 @@ def apply_arrival_slots(dm_work, dm_arr, active_daymen, day_idx, times, constrai
     """
     Vaihe 1.1: Tulo - kaikki aktiiviset daymanit (1h).
     """
-    arrival_start = times['arrival_start']
-    if arrival_start is None:
-        return
-    
-    for dm in active_daymen:
-        can_add = True
-        for slot in range(arrival_start, arrival_start + 2):
-            if not can_work_slot(dm, slot, day_idx, constraints, sum(dm_work[dm])/2):
-                can_add = False
-                break
-        if can_add:
-            add_block(dm_work[dm], arrival_start, arrival_start + 2, dm_arr[dm])
+    for arrival_start in times.get('arrival_starts', []):
+        for dm in active_daymen:
+            can_add = True
+            for slot in range(arrival_start, arrival_start + 2):
+                if not can_work_slot(dm, slot, day_idx, constraints, sum(dm_work[dm])/2):
+                    can_add = False
+                    break
+            if can_add:
+                add_block(dm_work[dm], arrival_start, arrival_start + 2, dm_arr[dm])
 
 
 def apply_departure_slots(dm_work, dm_dep, active_daymen, day_idx, times, constraints):
     """
     Vaihe 1.2: Lähtö - 2 daymaniä (1h).
     """
-    departure_start = times['departure_start']
-    if departure_start is None:
-        return
-    
-    scores = {}
-    for dm in active_daymen:
-        can_do = True
-        for slot in range(departure_start, departure_start + 2):
-            if not can_work_slot(dm, slot, day_idx, constraints, sum(dm_work[dm])/2):
-                can_do = False
-                break
-        if not can_do:
-            continue
-        
-        hours = sum(dm_work[dm]) / 2
-        continuity = 1 if (departure_start > 0 and dm_work[dm][departure_start - 1]) else 0
-        scores[dm] = -hours + continuity
-    
-    selected = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
-    for dm in selected:
-        add_block(dm_work[dm], departure_start, departure_start + 2, dm_dep[dm])
+    for departure_start in times.get('departure_starts', []):
+        scores = {}
+        for dm in active_daymen:
+            can_do = True
+            for slot in range(departure_start, departure_start + 2):
+                if not can_work_slot(dm, slot, day_idx, constraints, sum(dm_work[dm])/2):
+                    can_do = False
+                    break
+            if not can_do:
+                continue
+
+            hours = sum(dm_work[dm]) / 2
+            continuity = 1 if (departure_start > 0 and dm_work[dm][departure_start - 1]) else 0
+            scores[dm] = -hours + continuity
+
+        selected = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
+        for dm in selected:
+            add_block(dm_work[dm], departure_start, departure_start + 2, dm_dep[dm])
 
 
 def apply_sluice_arrival_slots(dm_work, dm_sluice, daymen, times):
     """
     Vaihe 1.3: Slussi tulo - 1. tunti 2 dm, 2. tunti 3 dm (2h kokonaan).
     """
-    sluice_arr_start = times['sluice_arr_start']
-    if sluice_arr_start is None:
-        return
-    
-    scores = {}
-    for dm in daymen:
-        hours = sum(dm_work[dm]) / 2
-        scores[dm] = -hours
-    
-    first_hour_dm = sorted(daymen, key=lambda x: scores[x], reverse=True)[:2]
-    
-    for dm in first_hour_dm:
-        add_block(dm_work[dm], sluice_arr_start, sluice_arr_start + 2, dm_sluice[dm])
-    
-    for dm in daymen:
-        add_block(dm_work[dm], sluice_arr_start + 2, sluice_arr_start + 4, dm_sluice[dm])
+    for sluice_arr_start in times.get('sluice_arr_starts', []):
+        scores = {}
+        for dm in daymen:
+            hours = sum(dm_work[dm]) / 2
+            scores[dm] = -hours
+
+        first_hour_dm = sorted(daymen, key=lambda x: scores[x], reverse=True)[:2]
+
+        for dm in first_hour_dm:
+            add_block(dm_work[dm], sluice_arr_start, sluice_arr_start + 2, dm_sluice[dm])
+
+        for dm in daymen:
+            add_block(dm_work[dm], sluice_arr_start + 2, sluice_arr_start + 4, dm_sluice[dm])
 
 
 def apply_sluice_departure_slots(dm_work, dm_sluice, daymen, times):
     """
     Vaihe 1.4: Slussi lähtö - 2 daymaniä (2h).
     """
-    sluice_dep_start = times['sluice_dep_start']
-    if sluice_dep_start is None:
-        return
-    
-    scores = {}
-    for dm in daymen:
-        hours = sum(dm_work[dm]) / 2
-        continuity = 1 if (sluice_dep_start > 0 and dm_work[dm][sluice_dep_start - 1]) else 0
-        scores[dm] = -hours + continuity
-    
-    selected = sorted(daymen, key=lambda x: scores[x], reverse=True)[:2]
-    for dm in selected:
-        add_block(dm_work[dm], sluice_dep_start, sluice_dep_start + 4, dm_sluice[dm])
+    for sluice_dep_start in times.get('sluice_dep_starts', []):
+        scores = {}
+        for dm in daymen:
+            hours = sum(dm_work[dm]) / 2
+            continuity = 1 if (sluice_dep_start > 0 and dm_work[dm][sluice_dep_start - 1]) else 0
+            scores[dm] = -hours + continuity
+
+        selected = sorted(daymen, key=lambda x: scores[x], reverse=True)[:2]
+        for dm in selected:
+            add_block(dm_work[dm], sluice_dep_start, sluice_dep_start + 4, dm_sluice[dm])
 
 
 def apply_shifting_slots(dm_work, dm_shifting, daymen, times):
     """
     Vaihe 1.5: Shiftaus - kaikki daymanit (1h).
     """
-    shifting_start = times['shifting_start']
-    if shifting_start is None:
-        return
-    
-    for dm in daymen:
-        add_block(dm_work[dm], shifting_start, shifting_start + 2, dm_shifting[dm])
+    for shifting_start in times.get('shifting_starts', []):
+        for dm in daymen:
+            add_block(dm_work[dm], shifting_start, shifting_start + 2, dm_shifting[dm])
 
 
 def apply_op_outside_normal_hours(dm_work, dm_ops, active_daymen, day_idx, times, 
@@ -554,10 +599,11 @@ def apply_op_outside_normal_hours(dm_work, dm_ops, active_daymen, day_idx, times
     op_end = times['op_end']
     
     op_outside_slots = []
-    for slot in range(op_start, min(op_end, 48)):
-        if slot < NORMAL_START or slot >= NORMAL_END:
-            if slot != LUNCH_START:
+    for start, end in times.get('op_ranges', []):
+        for slot in range(start, min(end, 48)):
+            if (slot < NORMAL_START or slot >= NORMAL_END) and slot != LUNCH_START:
                 op_outside_slots.append(slot)
+    op_outside_slots = sorted(set(op_outside_slots))
     
     # Jos jatkuva yö edellisestä päivästä
     if continuous_night_info is not None:
@@ -684,10 +730,12 @@ def fill_op_inside_normal_hours(dm_work, dm_ops, active_daymen, day_idx, times,
     op_end = times['op_end']
     
     op_inside_slots = []
-    for slot in range(max(op_start, NORMAL_START), min(op_end, NORMAL_END)):
-        if LUNCH_START <= slot < LUNCH_END:
-            continue
-        op_inside_slots.append(slot)
+    for start, end in times.get('op_ranges', []):
+        for slot in range(max(start, NORMAL_START), min(end, NORMAL_END)):
+            if LUNCH_START <= slot < LUNCH_END:
+                continue
+            op_inside_slots.append(slot)
+    op_inside_slots = sorted(set(op_inside_slots))
     
     for slot in op_inside_slots:
         workers_in_slot = [dm for dm in active_daymen if dm_work[dm][slot]]
@@ -790,7 +838,7 @@ def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constra
                 break
             
             dm_work[dm][slot] = True
-            if op_start <= slot < min(op_end, 48):
+            if is_op_slot(times, slot):
                 dm_ops[dm][slot] = True
             current_hours = sum(dm_work[dm]) / 2
             slot += 1
@@ -818,7 +866,7 @@ def _extend_night_shift(dm, dm_work, dm_ops, op_start, op_end, min_h, max_h,
             if not can_work_slot(dm, s, day_idx, constraints, current_hours):
                 break
             dm_work[dm][s] = True
-            if op_start <= s < min(op_end, 48):
+            if is_op_slot(times, s):
                 dm_ops[dm][s] = True
             current_hours = sum(dm_work[dm]) / 2
 
@@ -893,7 +941,7 @@ def fill_gaps_between_blocks(dm_work, dm_ops, active_daymen, day_idx, times, con
                     if not can_work_slot(dm, s, day_idx, constraints, current_hours):
                         continue
                     work[s] = True
-                    if op_start <= s < min(op_end, 48):
+                    if is_op_slot(times, s):
                         dm_ops[dm][s] = True
                     current_hours = sum(work) / 2
 
@@ -924,7 +972,7 @@ def fill_small_gaps(dm_work, dm_ops, active_daymen, times):
                     if LUNCH_START <= s < LUNCH_END:
                         continue
                     work[s] = True
-                    if op_start <= s < min(op_end, 48):
+                    if is_op_slot(times, s):
                         dm_ops[dm][s] = True
 
 
@@ -942,25 +990,19 @@ def generate_bosun_schedule(times):
     bosun_sluice = [False] * 48
     bosun_shifting = [False] * 48
     
-    arrival_start = times['arrival_start']
-    departure_start = times['departure_start']
-    sluice_arr_start = times['sluice_arr_start']
-    sluice_dep_start = times['sluice_dep_start']
-    shifting_start = times['shifting_start']
-    
-    if arrival_start is not None:
+    for arrival_start in times.get('arrival_starts', []):
         add_block(bosun_work, arrival_start, arrival_start + 2, bosun_arr)
-    
-    if departure_start is not None:
+
+    for departure_start in times.get('departure_starts', []):
         add_block(bosun_work, departure_start, departure_start + 2, bosun_dep)
-    
-    if sluice_arr_start is not None:
+
+    for sluice_arr_start in times.get('sluice_arr_starts', []):
         add_block(bosun_work, sluice_arr_start, sluice_arr_start + 4, bosun_sluice)
-    
-    if sluice_dep_start is not None:
+
+    for sluice_dep_start in times.get('sluice_dep_starts', []):
         add_block(bosun_work, sluice_dep_start, sluice_dep_start + 4, bosun_sluice)
-    
-    if shifting_start is not None:
+
+    for shifting_start in times.get('shifting_starts', []):
         add_block(bosun_work, shifting_start, shifting_start + 2, bosun_shifting)
     
     for slot in range(NORMAL_START, NORMAL_END):
