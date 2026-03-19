@@ -596,3 +596,51 @@ class TestDailyMinimumHours:
             for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
                 hours = sum(all_days[w][day_idx]['work_slots']) / 2
                 assert hours >= 8, f"{w} päivä {day_idx+1}: {hours}h (min 8h)"
+
+
+class TestMultipleOperationsPerDay:
+    """Useita saman tyypin operaatioita voidaan käsitellä samana päivänä."""
+
+    def test_multiple_arrivals_mark_all_daymen_for_each_entry(self):
+        days_data = [
+            {
+                'arrivals': [
+                    {'hour': 6, 'minute': 0},
+                    {'hour': 18, 'minute': 0},
+                ],
+                'departures': [],
+                'port_operations': [
+                    {'start_hour': 8, 'start_minute': 0, 'end_hour': 17, 'end_minute': 0},
+                ],
+                'sluice_arrivals': [],
+                'sluice_departures': [],
+                'shiftings': [],
+            }
+        ]
+
+        _, all_days, _ = generate_schedule(days_data)
+
+        for slot in [12, 13, 36, 37]:
+            count = sum(all_days[w][0]['arrival_slots'][slot] for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2'])
+            assert count == 3, f"Kaikkien daymanien pitäisi olla tulossa slotissa {slot}"
+
+    def test_multiple_port_operations_keep_coverage_in_each_segment(self):
+        days_data = [
+            {
+                'arrivals': [],
+                'departures': [],
+                'port_operations': [
+                    {'start_hour': 6, 'start_minute': 0, 'end_hour': 8, 'end_minute': 0},
+                    {'start_hour': 18, 'start_minute': 0, 'end_hour': 20, 'end_minute': 0},
+                ],
+                'sluice_arrivals': [],
+                'sluice_departures': [],
+                'shiftings': [],
+            }
+        ]
+
+        _, all_days, _ = generate_schedule(days_data)
+
+        for slot in [12, 13, 36, 37]:
+            count = sum(all_days[w][0]['work_slots'][slot] for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2'])
+            assert count >= 1, f"Port op coverage puuttuu slotista {slot}"
