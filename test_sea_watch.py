@@ -1,6 +1,8 @@
 
 
 import pytest
+from io import BytesIO
+from openpyxl import load_workbook
 from sea_watch_17 import (
     generate_schedule,
     check_stcw_at_slot,
@@ -523,8 +525,15 @@ class TestRegressions:
         ]
 
         wb, _, _ = generate_schedule(days_data)
-        ws = wb["Työvuorot"]
+        buffer = BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        loaded_wb = load_workbook(buffer, data_only=False)
+        ws = loaded_wb["Työvuorot"]
 
+        assert loaded_wb.calculation.calcMode == 'auto'
+        assert loaded_wb.calculation.fullCalcOnLoad is True
+        assert loaded_wb.calculation.forceFullCalc is True
         assert ws["AX3"].value == '=COUNTA(B3:AW3)/2'
         assert ws["AX3"].number_format == '0.0'
 

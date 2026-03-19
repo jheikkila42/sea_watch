@@ -1201,6 +1201,10 @@ def build_workbook_and_report(all_days, num_days, workers):
     Rakentaa Excel-työkirjan ja raportin.
     """
     wb = Workbook()
+    wb.calculation.calcMode = "auto"
+    wb.calculation.fullCalcOnLoad = True
+    wb.calculation.forceFullCalc = True
+    wb.calculation.calcOnSave = True
     ws = wb.active
     ws.title = "Työvuorot"
     
