@@ -191,6 +191,42 @@ def analyze_op_coverage(all_days: Dict, day_idx: int,
     }
 
 
+def get_port_operation_ranges(info: Dict) -> List[tuple]:
+    """Palauttaa päivän satamaoperaatiot slot-väleinä."""
+    port_operations = info.get('port_operations')
+    if port_operations:
+        ranges = []
+        for operation in port_operations:
+            start_h = operation.get('start_hour')
+            end_h = operation.get('end_hour')
+            if start_h is None:
+                continue
+            start = start_h * 2 + (1 if operation.get('start_minute', 0) == 30 else 0)
+            if end_h is None:
+                end = NORMAL_END
+            elif end_h < start_h or (end_h == 0 and start_h > 0):
+                end = 48
+            else:
+                end = end_h * 2 + (1 if operation.get('end_minute', 0) == 30 else 0)
+            ranges.append((start, end))
+        if ranges:
+            return ranges
+
+    op_start_h = info.get('port_op_start_hour')
+    op_end_h = info.get('port_op_end_hour')
+    if op_start_h is None:
+        return [(NORMAL_START, NORMAL_END)]
+
+    op_start = op_start_h * 2 + (1 if info.get('port_op_start_minute', 0) == 30 else 0)
+    if op_end_h is not None and (op_end_h < op_start_h or (op_end_h == 0 and op_start_h > 0)):
+        op_end = 48
+    elif op_end_h is not None:
+        op_end = op_end_h * 2 + (1 if info.get('port_op_end_minute', 0) == 30 else 0)
+    else:
+        op_end = NORMAL_END
+    return [(op_start, op_end)]
+
+
 def analyze_hour_balance(all_days: Dict, day_idx: int) -> Dict[str, Any]:
     """
     Analysoi tuntitasapaino daymanien välillä.
@@ -269,22 +305,7 @@ def analyze_schedule(all_days: Dict, days_data: List[Dict]) -> Dict[str, Any]:
         info = days_data[d]
         
         # Op-ajat
-        op_start_h = info.get('port_op_start_hour')
-        op_end_h = info.get('port_op_end_hour')
-        
-        if op_start_h is not None:
-            op_start = op_start_h * 2
-            if op_end_h is not None and op_end_h < op_start_h:
-                op_end = 48
-            elif op_end_h == 0 and op_start_h > 0:
-                op_end = 48
-            elif op_end_h is not None:
-                op_end = op_end_h * 2
-            else:
-                op_end = NORMAL_END
-        else:
-            op_start = NORMAL_START
-            op_end = NORMAL_END
+        op_ranges = get_port_operation_ranges(info)
         
         # Työntekijäanalyysit
         for dm in daymen:
@@ -303,9 +324,10 @@ def analyze_schedule(all_days: Dict, days_data: List[Dict]) -> Dict[str, Any]:
                     analysis['summary']['stcw_violations'] += 1
         
         # Op-kattavuusanalyysi
-        op_analysis = analyze_op_coverage(all_days, d, op_start, op_end)
-        analysis['op_coverage_analyses'].append(op_analysis)
-        analysis['summary']['op_coverage_gaps'] += len(op_analysis['gaps'])
+        for op_start, op_end in op_ranges:
+            op_analysis = analyze_op_coverage(all_days, d, op_start, op_end)
+            analysis['op_coverage_analyses'].append(op_analysis)
+            analysis['summary']['op_coverage_gaps'] += len(op_analysis['gaps'])
         
         # Tuntitasapainoanalyysi
         balance_analysis = analyze_hour_balance(all_days, d)
