@@ -1,6 +1,8 @@
 
 
 import pytest
+from io import BytesIO
+from openpyxl import load_workbook
 from sea_watch_17 import (
     generate_schedule,
     check_stcw_at_slot,
@@ -507,6 +509,36 @@ class TestRegressions:
             assert 8.0 <= hours <= 10.0, \
                 f"{w}: {hours}h (liian vähän/paljon)"
 
+    def test_excel_hours_column_uses_formula(self):
+        """Excelin tuntisarakkeessa on kaava, joka päivittyy muokkauksista."""
+        days_data = [
+            {
+                'arrival_hour': 8,
+                'arrival_minute': 0,
+                'departure_hour': 19,
+                'departure_minute': 0,
+                'port_op_start_hour': 10,
+                'port_op_start_minute': 0,
+                'port_op_end_hour': 18,
+                'port_op_end_minute': 0,
+            }
+        ]
+
+        wb, _, _ = generate_schedule(days_data)
+        buffer = BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        loaded_wb = load_workbook(buffer, data_only=False)
+        ws = loaded_wb["Työvuorot"]
+
+        assert loaded_wb.calculation.calcMode == 'auto'
+        assert loaded_wb.calculation.fullCalcOnLoad is True
+        assert loaded_wb.calculation.forceFullCalc is True
+        assert len(ws.conditional_formatting) == 1
+        assert ws["AX3"].value == '=COUNTA(B3:AW3)/2'
+        assert ws["AX3"].number_format == '0.0'
+        assert ws["B3"].fill.fill_type is None
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
@@ -596,3 +628,51 @@ class TestDailyMinimumHours:
             for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2']:
                 hours = sum(all_days[w][day_idx]['work_slots']) / 2
                 assert hours >= 8, f"{w} päivä {day_idx+1}: {hours}h (min 8h)"
+
+
+class TestMultipleOperationsPerDay:
+    """Useita saman tyypin operaatioita voidaan käsitellä samana päivänä."""
+
+    def test_multiple_arrivals_mark_all_daymen_for_each_entry(self):
+        days_data = [
+            {
+                'arrivals': [
+                    {'hour': 6, 'minute': 0},
+                    {'hour': 18, 'minute': 0},
+                ],
+                'departures': [],
+                'port_operations': [
+                    {'start_hour': 8, 'start_minute': 0, 'end_hour': 17, 'end_minute': 0},
+                ],
+                'sluice_arrivals': [],
+                'sluice_departures': [],
+                'shiftings': [],
+            }
+        ]
+
+        _, all_days, _ = generate_schedule(days_data)
+
+        for slot in [12, 13, 36, 37]:
+            count = sum(all_days[w][0]['arrival_slots'][slot] for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2'])
+            assert count == 3, f"Kaikkien daymanien pitäisi olla tulossa slotissa {slot}"
+
+    def test_multiple_port_operations_keep_coverage_in_each_segment(self):
+        days_data = [
+            {
+                'arrivals': [],
+                'departures': [],
+                'port_operations': [
+                    {'start_hour': 6, 'start_minute': 0, 'end_hour': 8, 'end_minute': 0},
+                    {'start_hour': 18, 'start_minute': 0, 'end_hour': 20, 'end_minute': 0},
+                ],
+                'sluice_arrivals': [],
+                'sluice_departures': [],
+                'shiftings': [],
+            }
+        ]
+
+        _, all_days, _ = generate_schedule(days_data)
+
+        for slot in [12, 13, 36, 37]:
+            count = sum(all_days[w][0]['work_slots'][slot] for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2'])
+            assert count >= 1, f"Port op coverage puuttuu slotista {slot}"
