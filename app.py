@@ -70,6 +70,22 @@ def init_session_state():
         st.session_state.parser = None
     if "post_edit_download_ready" not in st.session_state:
         st.session_state.post_edit_download_ready = False
+    if "stcw_longest_rest_hours" not in st.session_state:
+        st.session_state.stcw_longest_rest_hours = 6
+    if "buffer_enabled" not in st.session_state:
+        st.session_state.buffer_enabled = False
+    if "buffer_longest_rest_hours" not in st.session_state:
+        st.session_state.buffer_longest_rest_hours = 8
+    if "generation_rule_mode" not in st.session_state:
+        st.session_state.generation_rule_mode = "STCW (6h)"
+    if "generated_rest_config" not in st.session_state:
+        st.session_state.generated_rest_config = {
+            "stcw_longest_rest_hours": 6,
+            "buffer_enabled": False,
+            "buffer_longest_rest_hours": 8,
+            "generation_rule_mode": "STCW (6h)",
+            "generation_longest_rest_hours": 6,
+        }
 
 
 def init_agent_and_parser():
@@ -293,14 +309,43 @@ def apply_edited_work_df(all_days, day_idx, edited_df, visible_cols=None):
             slots[col_indexes[col]] = bool(row[col])
 
 
-def store_generated_result(wb, all_days, days_data, num_days, from_post_edit=False):
+def get_effective_rest_config():
+    stcw_longest = int(st.session_state.stcw_longest_rest_hours)
+    buffer_enabled = bool(st.session_state.buffer_enabled)
+    buffer_longest = int(st.session_state.buffer_longest_rest_hours)
+    generation_mode = st.session_state.generation_rule_mode
+
+    if generation_mode.startswith("BUFFER") and buffer_enabled:
+        generation_longest = buffer_longest
+    else:
+        generation_longest = stcw_longest
+
+    return {
+        "stcw_longest_rest_hours": stcw_longest,
+        "buffer_enabled": buffer_enabled,
+        "buffer_longest_rest_hours": buffer_longest,
+        "generation_rule_mode": generation_mode,
+        "generation_longest_rest_hours": generation_longest,
+    }
+
+
+def store_generated_result(wb, all_days, days_data, num_days, rest_config=None, from_post_edit=False):
     st.session_state.generated_wb = wb
     st.session_state.generated_all_days = all_days
     st.session_state.generated_days_data = days_data
     st.session_state.generated_num_days = num_days
     st.session_state.post_edit_download_ready = from_post_edit
+    if rest_config is None:
+        rest_config = get_effective_rest_config()
+    st.session_state.generated_rest_config = rest_config
     # Analysoi heti
-    st.session_state.analysis = analyze_schedule(all_days, days_data)
+    buffer_longest = rest_config["buffer_longest_rest_hours"] if rest_config["buffer_enabled"] else None
+    st.session_state.analysis = analyze_schedule(
+        all_days,
+        days_data,
+        stcw_longest_rest_hours=rest_config["stcw_longest_rest_hours"],
+        buffer_longest_rest_hours=buffer_longest,
+    )
 
 
 # ============================================================================
@@ -375,6 +420,7 @@ def render_post_generation_editor():
                 updated_all_days,
                 st.session_state.generated_days_data,
                 num_days,
+                rest_config=st.session_state.get("generated_rest_config"),
                 from_post_edit=True,
             )
             st.success("Vuorot päivitetty.")
@@ -508,13 +554,27 @@ def render_analysis_tab():
     
     analysis = st.session_state.analysis
     summary = analysis['summary']
+    rest_config = st.session_state.get("generated_rest_config", {})
+    stcw_longest = rest_config.get("stcw_longest_rest_hours", 6)
+    generation_mode = rest_config.get("generation_rule_mode", "STCW (6h)")
+    generation_longest = rest_config.get("generation_longest_rest_hours", stcw_longest)
+    buffer_enabled = rest_config.get("buffer_enabled", False)
+    buffer_longest = rest_config.get("buffer_longest_rest_hours", 8)
+
+    st.caption(
+        f"Generointi tehty säännöllä: {generation_mode} "
+        f"(pisin lepo vähintään {generation_longest}h). STCW-vertailuraja: {stcw_longest}h."
+    )
+    if buffer_enabled:
+        st.caption(f"Buffer-seuranta aktiivinen: pisin lepo vähintään {buffer_longest}h.")
     
     # Yhteenveto
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Ongelmat", summary['total_issues'])
     col2.metric("Varoitukset", summary['total_warnings'])
     col3.metric("STCW-rikkeet", summary['stcw_violations'])
-    col4.metric("Op-aukot", summary['op_coverage_gaps'])
+    col4.metric("Buffer-varoitukset", summary.get('buffer_violations', 0))
+    col5.metric("Op-aukot", summary['op_coverage_gaps'])
     
     # Yksityiskohdat
     if summary['total_issues'] > 0 or summary['total_warnings'] > 0:
@@ -627,6 +687,38 @@ def main():
         
         num_days = st.number_input("Päivien määrä", min_value=1, max_value=14, value=2, step=1)
         st.info("Jätä kenttä tyhjäksi jos tapahtumaa ei ole.")
+
+        st.divider()
+        st.markdown("**Leposäädöt**")
+        st.number_input(
+            "STCW pisin lepo (h)",
+            min_value=6,
+            max_value=6,
+            value=6,
+            disabled=True,
+            help="Virallinen STCW vertailuraja.",
+            key="stcw_longest_rest_hours",
+        )
+        st.checkbox(
+            "Ota bufferi käyttöön",
+            key="buffer_enabled",
+            help="Bufferilla voit tehdä tiukemman ennakointirajan generoinnille.",
+        )
+        st.number_input(
+            "Bufferin pisin lepo (h)",
+            min_value=6,
+            max_value=12,
+            step=1,
+            key="buffer_longest_rest_hours",
+            disabled=not st.session_state.buffer_enabled,
+        )
+        st.radio(
+            "Generoinnin sääntö",
+            ["STCW (6h)", "BUFFER (Xh)"],
+            key="generation_rule_mode",
+            disabled=not st.session_state.buffer_enabled,
+            help="BUFFER käyttää yllä asetettua Xh arvoa generointiin.",
+        )
         
         st.divider()
         
@@ -676,14 +768,19 @@ def main():
         days_data = build_days_data(1, num_days, key_prefix="auto")
         
         if st.button("🚀 Generoi työvuorot", key="gen_auto", type="primary"):
+            rest_config = get_effective_rest_config()
             # Hae rajoitteet
             constraints = []
             if st.session_state.parser:
                 constraints = st.session_state.parser.get_constraints()
             
             with st.spinner("Generoidaan..."):
-                wb, all_days, _ = generate_schedule(days_data, constraints=constraints)
-                store_generated_result(wb, all_days, days_data, num_days)
+                wb, all_days, _ = generate_schedule(
+                    days_data,
+                    constraints=constraints,
+                    min_longest_rest_hours=rest_config["generation_longest_rest_hours"],
+                )
+                store_generated_result(wb, all_days, days_data, num_days, rest_config=rest_config)
             
             if constraints:
                 st.success(f"✅ Työvuorot generoitu {len(constraints)} rajoitteella!")
@@ -715,6 +812,7 @@ def main():
             days_data_rest = []
         
         if st.button("🚀 Generoi työvuorot (manuaalinen päivä 1)", key="gen_manual"):
+            rest_config = get_effective_rest_config()
             day1_placeholder = {
                 "arrival_hour": None, "arrival_minute": 0,
                 "departure_hour": None, "departure_minute": 0,
@@ -734,11 +832,19 @@ def main():
             
             if generate_schedule_with_manual_day1 is None:
                 st.warning("Manuaalinen päivä 1 ei tuettu. Käytetään automaattista.")
-                wb, all_days, _ = generate_schedule(days_data, constraints=constraints)
+                wb, all_days, _ = generate_schedule(
+                    days_data,
+                    constraints=constraints,
+                    min_longest_rest_hours=rest_config["generation_longest_rest_hours"],
+                )
             else:
-                wb, all_days, _ = generate_schedule_with_manual_day1(days_data, manual_slots)
+                wb, all_days, _ = generate_schedule_with_manual_day1(
+                    days_data,
+                    manual_slots,
+                    min_longest_rest_hours=rest_config["generation_longest_rest_hours"],
+                )
             
-            store_generated_result(wb, all_days, days_data, num_days)
+            store_generated_result(wb, all_days, days_data, num_days, rest_config=rest_config)
             st.success("✅ Työvuorot generoitu!")
     
     # Tab 3: Muokkaa vuoroja

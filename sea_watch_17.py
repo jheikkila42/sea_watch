@@ -149,7 +149,7 @@ def analyze_stcw(work_48h):
     }
 
 
-def check_stcw_ok(work_slots, prev_day_work=None):
+def check_stcw_ok(work_slots, prev_day_work=None, min_longest_rest_hours=6):
     """
     Tarkistaa täyttääkö työvuoro STCW-vaatimukset.
     """
@@ -160,10 +160,10 @@ def check_stcw_ok(work_slots, prev_day_work=None):
     analysis = analyze_stcw(combined)
     
     # STCW: 10h lepo/24h, josta vähintään 6h yhtäjaksoinen
-    return analysis['total_rest'] >= 10 and analysis['longest_rest'] >= 6
+    return analysis['total_rest'] >= 10 and analysis['longest_rest'] >= min_longest_rest_hours
 
 
-def check_stcw_at_slot(work_48h, end_slot):
+def check_stcw_at_slot(work_48h, end_slot, min_longest_rest_hours=6):
     """
     Tarkistaa STCW-statuksen tietyssä kohdassa.
     """
@@ -176,7 +176,7 @@ def check_stcw_at_slot(work_48h, end_slot):
     analysis = analyze_stcw(window)
     
     total_ok = analysis['total_rest'] >= 10
-    longest_ok = analysis['longest_rest'] >= 6
+    longest_ok = analysis['longest_rest'] >= min_longest_rest_hours
     
     if total_ok and longest_ok:
         status = "OK"
@@ -333,7 +333,7 @@ def analyze_continuous_nights(days_data):
     return continuous_nights
 
 
-def evaluate_night_split(prev_early, prev_late, split_slot, arrival_start=None, departure_start=None):
+def evaluate_night_split(prev_early, prev_late, split_slot, arrival_start=None, departure_start=None, min_longest_rest_hours=6):
     """
     Arvioi yövuoron jakokohdan hyvyyttä.
     """
@@ -349,11 +349,11 @@ def evaluate_night_split(prev_early, prev_late, split_slot, arrival_start=None, 
     total_issues = 0
     if early_analysis['total_rest'] < 10:
         total_issues += 1
-    if early_analysis['longest_rest'] < 6:
+    if early_analysis['longest_rest'] < min_longest_rest_hours:
         total_issues += 1
     if late_analysis['total_rest'] < 10:
         total_issues += 1
-    if late_analysis['longest_rest'] < 6:
+    if late_analysis['longest_rest'] < min_longest_rest_hours:
         total_issues += 1
     
     min_longest_rest = min(early_analysis['longest_rest'], late_analysis['longest_rest'])
@@ -362,7 +362,7 @@ def evaluate_night_split(prev_early, prev_late, split_slot, arrival_start=None, 
     return (total_issues, -min_longest_rest, -min_total_rest)
 
 
-def choose_night_split_slot(prev_early, prev_late, arrival_start=None, departure_start=None):
+def choose_night_split_slot(prev_early, prev_late, arrival_start=None, departure_start=None, min_longest_rest_hours=6):
     """
     Valitsee optimaalisen yövuoron jakokohdan (01:00 - 07:00 väliltä).
     """
@@ -371,8 +371,14 @@ def choose_night_split_slot(prev_early, prev_late, arrival_start=None, departure
     best_score = None
     
     for split_slot in candidate_slots:
-        score = evaluate_night_split(prev_early, prev_late, split_slot, 
-                                     arrival_start, departure_start)
+        score = evaluate_night_split(
+            prev_early,
+            prev_late,
+            split_slot,
+            arrival_start,
+            departure_start,
+            min_longest_rest_hours=min_longest_rest_hours
+        )
         if best_score is None or score < best_score:
             best_score = score
             best_slot = split_slot
@@ -591,7 +597,8 @@ def apply_shifting_slots(dm_work, dm_shifting, daymen, times):
 
 
 def apply_op_outside_normal_hours(dm_work, dm_ops, active_daymen, day_idx, times, 
-                                   constraints, prev_day_work, continuous_night_info):
+                                   constraints, prev_day_work, continuous_night_info,
+                                   min_longest_rest_hours=6):
     """
     Vaihe 1.6: Satamaop 08-17 ULKOPUOLELLA - aina 1 dayman töissä.
     """
@@ -636,7 +643,11 @@ def apply_op_outside_normal_hours(dm_work, dm_ops, active_daymen, day_idx, times
             if current_hours < max_h and can_work_slot(current_worker, slot, day_idx, constraints, current_hours):
                 test_work = dm_work[current_worker][:]
                 test_work[slot] = True
-                stcw_ok = check_stcw_ok(test_work, prev_day_work[current_worker])
+                stcw_ok = check_stcw_ok(
+                    test_work,
+                    prev_day_work[current_worker],
+                    min_longest_rest_hours=min_longest_rest_hours
+                )
                 
                 if stcw_ok:
                     can_continue = True
@@ -647,7 +658,8 @@ def apply_op_outside_normal_hours(dm_work, dm_ops, active_daymen, day_idx, times
         else:
             best_dm = _find_best_worker_for_slot(
                 slot, active_daymen, current_worker, dm_work, prev_day_work,
-                day_idx, constraints, preferred
+                day_idx, constraints, preferred,
+                min_longest_rest_hours=min_longest_rest_hours
             )
             
             if best_dm:
@@ -663,7 +675,8 @@ def apply_op_outside_normal_hours(dm_work, dm_ops, active_daymen, day_idx, times
 
 
 def _find_best_worker_for_slot(slot, active_daymen, current_worker, dm_work, 
-                                prev_day_work, day_idx, constraints, preferred=None):
+                                prev_day_work, day_idx, constraints, preferred=None,
+                                min_longest_rest_hours=6):
     """
     Apufunktio: Etsii parhaan työntekijän tietylle slotille.
     """
@@ -685,7 +698,11 @@ def _find_best_worker_for_slot(slot, active_daymen, current_worker, dm_work,
         
         test_work = dm_work[dm][:]
         test_work[slot] = True
-        stcw_ok = check_stcw_ok(test_work, prev_day_work[dm])
+        stcw_ok = check_stcw_ok(
+            test_work,
+            prev_day_work[dm],
+            min_longest_rest_hours=min_longest_rest_hours
+        )
         
         if not stcw_ok:
             continue
@@ -722,7 +739,7 @@ def _find_best_worker_for_slot(slot, active_daymen, current_worker, dm_work,
 # ============================================================================
 
 def fill_op_inside_normal_hours(dm_work, dm_ops, active_daymen, day_idx, times, 
-                                 constraints, prev_day_work):
+                                 constraints, prev_day_work, min_longest_rest_hours=6):
     """
     Vaihe 3.1: Op-kattavuus 08-17 välillä.
     """
@@ -746,7 +763,8 @@ def fill_op_inside_normal_hours(dm_work, dm_ops, active_daymen, day_idx, times,
             continue
         
         best_dm = _find_best_worker_for_inside_slot(
-            slot, active_daymen, dm_work, prev_day_work, day_idx, constraints
+            slot, active_daymen, dm_work, prev_day_work, day_idx, constraints,
+            min_longest_rest_hours=min_longest_rest_hours
         )
         
         if best_dm:
@@ -757,7 +775,7 @@ def fill_op_inside_normal_hours(dm_work, dm_ops, active_daymen, day_idx, times,
 
 
 def _find_best_worker_for_inside_slot(slot, active_daymen, dm_work, prev_day_work, 
-                                       day_idx, constraints):
+                                       day_idx, constraints, min_longest_rest_hours=6):
     """
     Apufunktio: Etsii parhaan työntekijän 08-17 slotille.
     """
@@ -783,7 +801,11 @@ def _find_best_worker_for_inside_slot(slot, active_daymen, dm_work, prev_day_wor
         
         test_work = dm_work[dm][:]
         test_work[slot] = True
-        stcw_ok = check_stcw_ok(test_work, prev_day_work[dm])
+        stcw_ok = check_stcw_ok(
+            test_work,
+            prev_day_work[dm],
+            min_longest_rest_hours=min_longest_rest_hours
+        )
         
         if not stcw_ok:
             continue
@@ -1080,7 +1102,7 @@ def choose_continuous_night_workers(prev_day_daymen_work):
 # PÄÄFUNKTIO
 # ============================================================================
 
-def generate_schedule(days_data, constraints=None):
+def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
     """
     Generoi työvuorot blokkipohjaisella lähestymistavalla.
     
@@ -1154,12 +1176,14 @@ def generate_schedule(days_data, constraints=None):
         apply_shifting_slots(dm_work, dm_shifting, DAYMEN, times)
         apply_op_outside_normal_hours(
             dm_work, dm_ops, active_daymen, day_idx, times,
-            constraints, prev_day_work, continuous_night_info
+            constraints, prev_day_work, continuous_night_info,
+            min_longest_rest_hours=min_longest_rest_hours
         )
         
         # VAIHE 3: Jaa työblokit
         op_inside_slots = fill_op_inside_normal_hours(
-            dm_work, dm_ops, active_daymen, day_idx, times, constraints, prev_day_work
+            dm_work, dm_ops, active_daymen, day_idx, times, constraints, prev_day_work,
+            min_longest_rest_hours=min_longest_rest_hours
         )
         fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constraints)
         ensure_op_coverage(dm_work, dm_ops, op_inside_slots, active_daymen, day_idx, constraints)
@@ -1297,7 +1321,7 @@ def build_workbook_and_report(all_days, num_days, workers):
 # MANUAALINEN PÄIVÄ 1
 # ============================================================================
 
-def generate_schedule_with_manual_day1(days_data, manual_day1_slots):
+def generate_schedule_with_manual_day1(days_data, manual_day1_slots, min_longest_rest_hours=6):
     """
     Generoi työvuorot manuaalisella päivällä 1.
     """
@@ -1323,7 +1347,10 @@ def generate_schedule_with_manual_day1(days_data, manual_day1_slots):
         })
     
     if num_days > 1:
-        _, rest_days, _ = generate_schedule(days_data[1:])
+        _, rest_days, _ = generate_schedule(
+            days_data[1:],
+            min_longest_rest_hours=min_longest_rest_hours
+        )
         for worker in WORKERS:
             all_days[worker].extend(rest_days[worker])
     
