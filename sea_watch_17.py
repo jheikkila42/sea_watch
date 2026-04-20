@@ -823,9 +823,6 @@ def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constra
     """
     Vaihe 3.2: Täytä loput tunnit 08:00 alkaen.
     """
-    op_start = times['op_start']
-    op_end = times['op_end']
-    
     for dm in active_daymen:
         current_hours = sum(dm_work[dm]) / 2
         min_h = get_min_hours(dm, constraints)
@@ -838,8 +835,9 @@ def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constra
         did_night_shift = night_work_slots >= 4
         
         if did_night_shift:
-            _extend_night_shift(dm, dm_work, dm_ops, op_start, op_end, min_h, max_h, 
-                               day_idx, constraints)
+            _extend_night_shift(
+                dm, dm_work, dm_ops, min_h, max_h, day_idx, times, constraints
+            )
             continue
         
         slot = NORMAL_START
@@ -866,8 +864,7 @@ def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constra
             slot += 1
 
 
-def _extend_night_shift(dm, dm_work, dm_ops, op_start, op_end, min_h, max_h, 
-                        day_idx, constraints):
+def _extend_night_shift(dm, dm_work, dm_ops, min_h, max_h, day_idx, times, constraints):
     """
     Apufunktio: Laajentaa yövuoroa tarvittaessa.
     """

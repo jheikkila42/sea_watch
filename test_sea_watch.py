@@ -727,3 +727,24 @@ class TestHourRebalancing:
         for slot in range(16, 36):
             assert any(dm_work[dm][slot] and dm_ops[dm][slot] for dm in daymen), \
                 f"Op-kattavuus puuttuu slotissa {slot}"
+
+
+class TestNightShiftExtensionRegression:
+    """Regression: yövuoron jatko ei saa kaatua undefined 'times' virheeseen."""
+
+    def test_generate_schedule_with_night_shift_extension_does_not_crash(self):
+        days_data = [
+            {
+                'arrival_hour': None,
+                'arrival_minute': 0,
+                'departure_hour': None,
+                'departure_minute': 0,
+                'port_op_start_hour': 0,
+                'port_op_start_minute': 0,
+                'port_op_end_hour': 8,
+                'port_op_end_minute': 0
+            }
+        ]
+
+        _, all_days, _ = generate_schedule(days_data)
+        assert len(all_days['Dayman EU']) == 1
