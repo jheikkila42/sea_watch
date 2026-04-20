@@ -823,9 +823,6 @@ def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constra
     """
     Vaihe 3.2: Täytä loput tunnit 08:00 alkaen.
     """
-    op_start = times['op_start']
-    op_end = times['op_end']
-    
     for dm in active_daymen:
         current_hours = sum(dm_work[dm]) / 2
         min_h = get_min_hours(dm, constraints)
@@ -838,8 +835,9 @@ def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constra
         did_night_shift = night_work_slots >= 4
         
         if did_night_shift:
-            _extend_night_shift(dm, dm_work, dm_ops, op_start, op_end, min_h, max_h, 
-                               day_idx, constraints)
+            _extend_night_shift(
+                dm, dm_work, dm_ops, min_h, max_h, day_idx, times, constraints
+            )
             continue
         
         slot = NORMAL_START
@@ -866,8 +864,7 @@ def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constra
             slot += 1
 
 
-def _extend_night_shift(dm, dm_work, dm_ops, op_start, op_end, min_h, max_h, 
-                        day_idx, constraints):
+def _extend_night_shift(dm, dm_work, dm_ops, min_h, max_h, day_idx, times, constraints):
     """
     Apufunktio: Laajentaa yövuoroa tarvittaessa.
     """
@@ -996,6 +993,125 @@ def fill_small_gaps(dm_work, dm_ops, active_daymen, times):
                     work[s] = True
                     if is_op_slot(times, s):
                         dm_ops[dm][s] = True
+
+
+def rebalance_dayman_hours(
+    dm_work,
+    dm_ops,
+    dm_arr,
+    dm_dep,
+    dm_sluice,
+    dm_shifting,
+    active_daymen,
+    day_idx,
+    times,
+    constraints,
+    prev_day_work,
+    min_longest_rest_hours=6,
+    max_diff_hours=1.0,
+):
+    """
+    Tasapainottaa daymanien tuntieroja siirtämällä 30 min slotteja.
+    Säilyttää op-kattavuuden sekä STCW-vaatimukset.
+    """
+    if len(active_daymen) < 2:
+        return
+
+    max_iterations = 200
+
+    for _ in range(max_iterations):
+        hours = {dm: sum(dm_work[dm]) / 2 for dm in active_daymen}
+        donor = max(active_daymen, key=lambda dm: hours[dm])
+        receiver = min(active_daymen, key=lambda dm: hours[dm])
+        diff = hours[donor] - hours[receiver]
+
+        if diff <= max_diff_hours:
+            break
+
+        moved = False
+
+        for slot in range(NORMAL_START, NORMAL_END):
+            if LUNCH_START <= slot < LUNCH_END:
+                continue
+            if not dm_work[donor][slot] or dm_work[receiver][slot]:
+                continue
+
+            # Älä siirrä pakollisia blokkeja donorilta
+            if (
+                dm_arr[donor][slot]
+                or dm_dep[donor][slot]
+                or dm_sluice[donor][slot]
+                or dm_shifting[donor][slot]
+                or must_work_slot(donor, slot, day_idx, constraints)
+            ):
+                continue
+
+            donor_hours_after = hours[donor] - 0.5
+            if donor_hours_after < get_min_hours(donor, constraints):
+                continue
+
+            receiver_hours = hours[receiver]
+            receiver_max = get_max_hours(receiver, constraints)
+            if receiver_hours >= receiver_max:
+                continue
+            if not can_work_slot(receiver, slot, day_idx, constraints, receiver_hours):
+                continue
+
+            # Op-kattavuus: jos donor on ainoa, receiverin pitää ottaa slotti.
+            is_op = is_op_slot(times, slot)
+            op_workers = [
+                dm for dm in active_daymen
+                if dm_work[dm][slot] and dm_ops[dm][slot]
+            ]
+            donor_is_only_op = is_op and op_workers == [donor]
+
+            # Testaa STCW donorille ja receiverille
+            donor_test = dm_work[donor][:]
+            donor_test[slot] = False
+            receiver_test = dm_work[receiver][:]
+            receiver_test[slot] = True
+
+            if not check_stcw_ok(
+                donor_test,
+                prev_day_work[donor],
+                min_longest_rest_hours=min_longest_rest_hours
+            ):
+                continue
+            if not check_stcw_ok(
+                receiver_test,
+                prev_day_work[receiver],
+                min_longest_rest_hours=min_longest_rest_hours
+            ):
+                continue
+
+            # Tee siirto
+            dm_work[donor][slot] = False
+            dm_work[receiver][slot] = True
+
+            if is_op:
+                dm_ops[receiver][slot] = True
+                # donorin op-merkintä pois, jos donor ei enää työskentele slotissa
+                dm_ops[donor][slot] = False
+            elif dm_ops[donor][slot] and not dm_work[donor][slot]:
+                dm_ops[donor][slot] = False
+
+            # Varmista, että op-slotilla on edelleen vähintään yksi tekijä
+            if donor_is_only_op and not any(
+                dm_work[dm][slot] and dm_ops[dm][slot] for dm in active_daymen
+            ):
+                # rollback
+                dm_work[donor][slot] = True
+                dm_work[receiver][slot] = False
+                dm_ops[donor][slot] = True
+                if not dm_work[receiver][slot]:
+                    dm_ops[receiver][slot] = False
+                continue
+
+            moved = True
+            break
+
+        if not moved:
+            break
 
 
 # ============================================================================
@@ -1191,6 +1307,14 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
         
         # VAIHE 4: Täytä pienet aukot
         fill_small_gaps(dm_work, dm_ops, active_daymen, times)
+
+        # VAIHE 5: Tasapainota daymanien tunnit (ero max 1h)
+        rebalance_dayman_hours(
+            dm_work, dm_ops, dm_arr, dm_dep, dm_sluice, dm_shifting,
+            active_daymen, day_idx, times, constraints, prev_day_work,
+            min_longest_rest_hours=min_longest_rest_hours,
+            max_diff_hours=1.0
+        )
         
         # Tallenna daymanien tulokset
         for dm in DAYMEN:

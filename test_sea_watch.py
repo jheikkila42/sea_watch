@@ -6,6 +6,7 @@ from openpyxl import load_workbook
 from sea_watch_17 import (
     generate_schedule,
     check_stcw_at_slot,
+    rebalance_dayman_hours,
     time_to_slot,
     slot_to_time_str,
 )
@@ -674,3 +675,76 @@ class TestMultipleOperationsPerDay:
         for slot in [12, 13, 36, 37]:
             count = sum(all_days[w][0]['work_slots'][slot] for w in ['Dayman EU', 'Dayman PH1', 'Dayman PH2'])
             assert count >= 1, f"Port op coverage puuttuu slotista {slot}"
+
+
+class TestHourRebalancing:
+    """Loppuvaiheen tuntitasapainotus pitää erot pieninä."""
+
+    def test_rebalance_reduces_dayman_hour_diff_to_max_1h(self):
+        daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+        dm_work = {dm: [False] * 48 for dm in daymen}
+        dm_ops = {dm: [False] * 48 for dm in daymen}
+        dm_arr = {dm: [False] * 48 for dm in daymen}
+        dm_dep = {dm: [False] * 48 for dm in daymen}
+        dm_sluice = {dm: [False] * 48 for dm in daymen}
+        dm_shifting = {dm: [False] * 48 for dm in daymen}
+
+        # Keinotekoisesti epätasainen jako:
+        # EU 10h, PH1 8h, PH2 8h (ero 2h)
+        for slot in range(16, 36):  # 08:00-18:00
+            dm_work['Dayman EU'][slot] = True
+            dm_ops['Dayman EU'][slot] = True
+        for slot in range(16, 32):  # 08:00-16:00
+            dm_work['Dayman PH1'][slot] = True
+            dm_ops['Dayman PH1'][slot] = True
+        for slot in range(20, 36):  # 10:00-18:00
+            dm_work['Dayman PH2'][slot] = True
+            dm_ops['Dayman PH2'][slot] = True
+
+        times = {
+            'op_start': 16,
+            'op_end': 36,
+            'op_ranges': [(16, 36)],
+            'arrival_starts': [],
+            'departure_starts': [],
+            'sluice_arr_starts': [],
+            'sluice_dep_starts': [],
+            'shifting_starts': [],
+        }
+        prev_day_work = {dm: [False] * 48 for dm in daymen}
+
+        rebalance_dayman_hours(
+            dm_work, dm_ops, dm_arr, dm_dep, dm_sluice, dm_shifting,
+            daymen, 0, times, [], prev_day_work,
+            min_longest_rest_hours=6, max_diff_hours=1.0
+        )
+
+        hours = {dm: sum(dm_work[dm]) / 2 for dm in daymen}
+        diff = max(hours.values()) - min(hours.values())
+        assert diff <= 1.0, f"Tuntiero jäi liian suureksi: {hours}"
+
+        # Op-kattavuus säilyy kaikissa op-sloteissa
+        for slot in range(16, 36):
+            assert any(dm_work[dm][slot] and dm_ops[dm][slot] for dm in daymen), \
+                f"Op-kattavuus puuttuu slotissa {slot}"
+
+
+class TestNightShiftExtensionRegression:
+    """Regression: yövuoron jatko ei saa kaatua undefined 'times' virheeseen."""
+
+    def test_generate_schedule_with_night_shift_extension_does_not_crash(self):
+        days_data = [
+            {
+                'arrival_hour': None,
+                'arrival_minute': 0,
+                'departure_hour': None,
+                'departure_minute': 0,
+                'port_op_start_hour': 0,
+                'port_op_start_minute': 0,
+                'port_op_end_hour': 8,
+                'port_op_end_minute': 0
+            }
+        ]
+
+        _, all_days, _ = generate_schedule(days_data)
+        assert len(all_days['Dayman EU']) == 1
