@@ -12,6 +12,7 @@ Vaiheet:
 """
 
 from openpyxl import Workbook
+from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import PatternFill, Border, Side, Alignment, Font
 from openpyxl.utils import get_column_letter
 
@@ -37,6 +38,20 @@ MAX_HOURS = 10
 WORKERS = ['Bosun', 'Dayman EU', 'Dayman PH1', 'Dayman PH2',
            'Watchman 1', 'Watchman 2', 'Watchman 3']
 DAYMEN = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+
+
+def add_time_cell_conditional_formatting(ws, start_row, end_row):
+    """Lisää työaikasoluille ehdolliset värit solun arvon perusteella."""
+    if start_row > end_row:
+        return
+
+    time_range = f"B{start_row}:AW{end_row}"
+    ws.conditional_formatting.add(time_range, CellIsRule(operator='equal', formula=['"SL"'], fill=PURPLE))
+    ws.conditional_formatting.add(time_range, CellIsRule(operator='equal', formula=['"SH"'], fill=PINK))
+    ws.conditional_formatting.add(time_range, CellIsRule(operator='equal', formula=['"B"'], fill=YELLOW))
+    ws.conditional_formatting.add(time_range, CellIsRule(operator='equal', formula=['"C"'], fill=ORANGE))
+    ws.conditional_formatting.add(time_range, CellIsRule(operator='equal', formula=['"OP"'], fill=GREEN))
+    ws.conditional_formatting.add(time_range, CellIsRule(operator='equal', formula=['"X"'], fill=BLUE))
 
 
 # ============================================================================
@@ -1383,7 +1398,8 @@ def build_workbook_and_report(all_days, num_days, workers):
             ws.cell(row=current_row, column=col).font = Font(size=8)
         ws.cell(row=current_row, column=50, value="Tunnit")
         current_row += 1
-        
+
+        worker_start_row = current_row
         for worker in workers:
             ws.cell(row=current_row, column=1, value=worker)
             day_data = all_days[worker][d]
@@ -1402,25 +1418,19 @@ def build_workbook_and_report(all_days, num_days, workers):
                 cell.border = thin_border
                 
                 if sluice[slot]:
-                    cell.fill = PURPLE
                     cell.value = "SL"
                 elif shifting[slot]:
-                    cell.fill = PINK
                     cell.value = "SH"
                 elif arr[slot]:
-                    cell.fill = YELLOW
                     cell.value = "B"
                 elif dep[slot]:
-                    cell.fill = ORANGE
                     cell.value = "C"
                 elif ops[slot]:
-                    cell.fill = GREEN
                     cell.value = "OP"
                 elif work[slot]:
-                    cell.fill = BLUE
                     cell.value = "X"
                 else:
-                    cell.fill = WHITE
+                    cell.value = None
                 
                 cell.alignment = Alignment(horizontal='center')
                 cell.font = Font(size=8)
@@ -1432,7 +1442,8 @@ def build_workbook_and_report(all_days, num_days, workers):
             
             ranges = get_work_ranges(work)
             report_lines.append(f"Päivä {d+1} - {worker}: {hours}h | {' + '.join(ranges)}")
-        
+
+        add_time_cell_conditional_formatting(ws, worker_start_row, current_row - 1)
         current_row += 1
     
     ws.column_dimensions['A'].width = 12
