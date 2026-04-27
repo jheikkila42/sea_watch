@@ -1123,11 +1123,7 @@ def rebalance_dayman_hours(
 
 def generate_bosun_schedule(times):
     """
-    Generoi bosunin työvuorot (vähintään 8h päivä).
-    - Pakolliset: tulo, lähtö, slussi, shiftaus (AINA mukana)
-    - Täytetään 8h:iin normaalityöajalla (08-17)
-    - EI osallistu lastioperaatioihin
-    - Päivä voi olla pidempi jos pakolliset vaativat
+    Generoi bosunin työvuorot (08-17 + tulo/lähtö + slussi + shiftaus).
     """
     bosun_work = [False] * 48
     bosun_arr = [False] * 48
@@ -1135,7 +1131,6 @@ def generate_bosun_schedule(times):
     bosun_sluice = [False] * 48
     bosun_shifting = [False] * 48
     
-    # 1. Kaikki pakolliset tapahtumat ENSIN (nämä tulevat aina)
     for arrival_start in times.get('arrival_starts', []):
         add_block(bosun_work, arrival_start, arrival_start + 2, bosun_arr)
 
@@ -1151,22 +1146,10 @@ def generate_bosun_schedule(times):
     for shifting_start in times.get('shifting_starts', []):
         add_block(bosun_work, shifting_start, shifting_start + 2, bosun_shifting)
     
-    # 2. Laske pakollisten tunnit
-    mandatory_hours = sum(bosun_work) / 2
-    
-    # 3. Täytä LOPUT 8h:iin normaalityöajalla (08-17)
-    #    Jos pakolliset jo >= 8h, ei täytetä lisää
-    current_hours = mandatory_hours
-    
     for slot in range(NORMAL_START, NORMAL_END):
-        if current_hours >= MIN_HOURS:
-            break
         if LUNCH_START <= slot < LUNCH_END:
             continue
-        if bosun_work[slot]:
-            continue
         bosun_work[slot] = True
-        current_hours += 0.5
     
     return {
         'work_slots': bosun_work,
@@ -1394,8 +1377,10 @@ def build_workbook_and_report(all_days, num_days, workers):
         ws.cell(row=current_row, column=1, value="Työntekijä")
         for slot in range(48):
             col = slot + 2
-            time_str = slot_to_time_str(slot)
-            ws.cell(row=current_row, column=col, value=time_str)
+            # Näytä vain tasatunnit (slotit 0, 2, 4, 6, ... = 00:00, 01:00, 02:00, ...)
+            if slot % 2 == 0:
+                time_str = f"{slot // 2:02d}:00"
+                ws.cell(row=current_row, column=col, value=time_str)
             ws.cell(row=current_row, column=col).alignment = Alignment(horizontal='center')
             ws.cell(row=current_row, column=col).font = Font(size=8)
         ws.cell(row=current_row, column=50, value="Tunnit")
