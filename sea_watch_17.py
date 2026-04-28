@@ -110,11 +110,11 @@ def parse_time_str(time_str):
 # STCW-TARKISTUS
 # ============================================================================
 
-def analyze_stcw(work_48h):
+def analyze_stcw_window(window_48_slots):
     """
-    Analysoi STCW-lepoajat 48h (2 päivän) työvuorolistasta.
+    Analysoi STCW-lepoajat yhdestä 24h (48 slotin) ikkunasta.
     """
-    rest_slots = [not w for w in work_48h[:48]]
+    rest_slots = [not w for w in window_48_slots]
     
     rest_periods = []
     current_rest = 0
@@ -128,39 +128,92 @@ def analyze_stcw(work_48h):
     if current_rest >= 2:
         rest_periods.append(current_rest / 2)
     
-    # Yhdistä yölepo jos se jatkuu keskiyön yli
-    if len(rest_periods) >= 2 and len(work_48h) >= 48:
-        if not work_48h[47] and not work_48h[0]:
+    # Yhdistä lepo jos se jatkuu ikkunan alusta loppuun (wrap-around)
+    if len(rest_periods) >= 2 and len(window_48_slots) == 48:
+        if rest_slots[0] and rest_slots[-1]:
+            # Ensimmäinen ja viimeinen slotti ovat lepoa -> yhdistä
             combined = rest_periods[-1] + rest_periods[0]
             rest_periods = [combined] + rest_periods[1:-1]
     
     total_rest = sum(rest_periods)
     longest_rest = max(rest_periods) if rest_periods else 0
     
-    sorted_periods = sorted(rest_periods, reverse=True)
-    top_two = sorted_periods[:2] if len(sorted_periods) >= 2 else sorted_periods
-    top_two_total = sum(top_two)
-    
     return {
         'total_rest': total_rest,
         'longest_rest': longest_rest,
-        'rest_periods': rest_periods,
-        'top_two_total': top_two_total
+        'rest_periods': rest_periods
     }
+
+
+def analyze_stcw(work_48h):
+    """
+    Analysoi STCW-lepoajat 48h (2 päivän) työvuorolistasta.
+    Käyttää vain ensimmäistä 24h ikkunaa (taaksepäin yhteensopivuus).
+    """
+    window = work_48h[:48] if len(work_48h) >= 48 else work_48h
+    analysis = analyze_stcw_window(window)
+    
+    # Lisää top_two taaksepäin yhteensopivuutta varten
+    sorted_periods = sorted(analysis['rest_periods'], reverse=True)
+    top_two = sorted_periods[:2] if len(sorted_periods) >= 2 else sorted_periods
+    analysis['top_two_total'] = sum(top_two)
+    
+    return analysis
+
+
+def check_stcw_sliding(prev_day_work, current_day_work, min_longest_rest_hours=6):
+    """
+    Tarkistaa STCW-vaatimukset liukuvalla 24h ikkunalla.
+    
+    Käy läpi kaikki 48 mahdollista 24h jaksoa jotka alkavat
+    edellisen päivän jokaisesta puolen tunnin slotista.
+    
+    Returns:
+        (ok, worst_slot, worst_analysis)
+        - ok: True jos kaikki ikkunat OK
+        - worst_slot: Slotin indeksi jossa pahin rike (tai None)
+        - worst_analysis: Analyysi pahimmasta ikkunasta (tai None)
+    """
+    if prev_day_work is None:
+        prev_day_work = [False] * 48
+    if current_day_work is None:
+        current_day_work = [False] * 48
+    
+    combined = prev_day_work + current_day_work  # 96 slottia
+    
+    worst_slot = None
+    worst_total_rest = 999
+    worst_analysis = None
+    
+    # Tarkista jokainen 24h ikkuna (48 ikkunaa)
+    for start in range(48):
+        window = combined[start:start + 48]
+        analysis = analyze_stcw_window(window)
+        
+        # Tarkista rike
+        if analysis['total_rest'] < 10 or analysis['longest_rest'] < min_longest_rest_hours:
+            # Tallenna pahin tapaus
+            if analysis['total_rest'] < worst_total_rest:
+                worst_total_rest = analysis['total_rest']
+                worst_slot = start
+                worst_analysis = analysis
+    
+    if worst_slot is not None:
+        return False, worst_slot, worst_analysis
+    
+    return True, None, None
 
 
 def check_stcw_ok(work_slots, prev_day_work=None, min_longest_rest_hours=6):
     """
     Tarkistaa täyttääkö työvuoro STCW-vaatimukset.
+    Käyttää liukuvaa 24h ikkunaa.
     """
     if prev_day_work is None:
         prev_day_work = [False] * 48
     
-    combined = prev_day_work + work_slots
-    analysis = analyze_stcw(combined)
-    
-    # STCW: 10h lepo/24h, josta vähintään 6h yhtäjaksoinen
-    return analysis['total_rest'] >= 10 and analysis['longest_rest'] >= min_longest_rest_hours
+    ok, _, _ = check_stcw_sliding(prev_day_work, work_slots, min_longest_rest_hours)
+    return ok
 
 
 def check_stcw_at_slot(work_48h, end_slot, min_longest_rest_hours=6):
