@@ -12,7 +12,7 @@ Analysoi generoituja työvuoroja ja tunnistaa:
 
 from typing import Dict, List, Any
 from sea_watch_17 import (
-    check_stcw_at_slot,
+    check_stcw_sliding,
     get_work_ranges,
     slot_to_time_str,
     NORMAL_START,
@@ -24,14 +24,8 @@ from sea_watch_17 import (
 )
 
 
-def analyze_worker_day(
-    worker: str,
-    day_idx: int,
-    day_data: Dict,
-    prev_day_data: Dict = None,
-    stcw_longest_rest_hours: int = 6,
-    buffer_longest_rest_hours: int = None,
-) -> Dict[str, Any]:
+def analyze_worker_day(worker: str, day_idx: int, day_data: Dict, 
+                       prev_day_data: Dict = None) -> Dict[str, Any]:
     """
     Analysoi yhden työntekijän yhden päivän vuorot.
     
@@ -59,29 +53,18 @@ def analyze_worker_day(
     # 2. Tarkista STCW (jos edellinen päivä saatavilla)
     if prev_day_data is not None:
         prev_work = prev_day_data['work_slots']
-        combined = prev_work + work
-        stcw_result = check_stcw_at_slot(
-            combined,
-            len(combined) - 1,
-            min_longest_rest_hours=stcw_longest_rest_hours,
-        )
-
-        if stcw_result['status'] != "OK":
+        
+        # Käytä liukuvaa 24h ikkunaa
+        ok, worst_slot, stcw_result = check_stcw_sliding(prev_work, work)
+        
+        if not ok:
+            worst_time_h = worst_slot // 2
+            worst_time_m = '30' if worst_slot % 2 else '00'
             issues.append(
-                f"STCW: {stcw_result['status']} (total_rest={stcw_result['total_rest']}h, "
-                f"longest_rest={stcw_result['longest_rest']}h)"
+                f"STCW-rike: {stcw_result['total_rest']}h lepoa "
+                f"(min 10h) jaksolla alkaen edellisen päivän klo {worst_time_h:02d}:{worst_time_m}, "
+                f"pisin lepo {stcw_result['longest_rest']}h"
             )
-        if buffer_longest_rest_hours and buffer_longest_rest_hours != stcw_longest_rest_hours:
-            buffer_result = check_stcw_at_slot(
-                combined,
-                len(combined) - 1,
-                min_longest_rest_hours=buffer_longest_rest_hours,
-            )
-            if buffer_result['status'] != "OK":
-                warnings.append(
-                    f"BUFFER({buffer_longest_rest_hours}h): {buffer_result['status']} "
-                    f"(longest_rest={buffer_result['longest_rest']}h)"
-                )
     
     # 3. Tarkista turhat tauot (yli 1h aukot työjaksojen välissä)
     gaps = find_work_gaps(work)
@@ -212,42 +195,6 @@ def analyze_op_coverage(all_days: Dict, day_idx: int,
     }
 
 
-def get_port_operation_ranges(info: Dict) -> List[tuple]:
-    """Palauttaa päivän satamaoperaatiot slot-väleinä."""
-    port_operations = info.get('port_operations')
-    if port_operations:
-        ranges = []
-        for operation in port_operations:
-            start_h = operation.get('start_hour')
-            end_h = operation.get('end_hour')
-            if start_h is None:
-                continue
-            start = start_h * 2 + (1 if operation.get('start_minute', 0) == 30 else 0)
-            if end_h is None:
-                end = NORMAL_END
-            elif end_h < start_h or (end_h == 0 and start_h > 0):
-                end = 48
-            else:
-                end = end_h * 2 + (1 if operation.get('end_minute', 0) == 30 else 0)
-            ranges.append((start, end))
-        if ranges:
-            return ranges
-
-    op_start_h = info.get('port_op_start_hour')
-    op_end_h = info.get('port_op_end_hour')
-    if op_start_h is None:
-        return [(NORMAL_START, NORMAL_END)]
-
-    op_start = op_start_h * 2 + (1 if info.get('port_op_start_minute', 0) == 30 else 0)
-    if op_end_h is not None and (op_end_h < op_start_h or (op_end_h == 0 and op_start_h > 0)):
-        op_end = 48
-    elif op_end_h is not None:
-        op_end = op_end_h * 2 + (1 if info.get('port_op_end_minute', 0) == 30 else 0)
-    else:
-        op_end = NORMAL_END
-    return [(op_start, op_end)]
-
-
 def analyze_hour_balance(all_days: Dict, day_idx: int) -> Dict[str, Any]:
     """
     Analysoi tuntitasapaino daymanien välillä.
@@ -293,12 +240,7 @@ def analyze_hour_balance(all_days: Dict, day_idx: int) -> Dict[str, Any]:
     }
 
 
-def analyze_schedule(
-    all_days: Dict,
-    days_data: List[Dict],
-    stcw_longest_rest_hours: int = 6,
-    buffer_longest_rest_hours: int = None,
-) -> Dict[str, Any]:
+def analyze_schedule(all_days: Dict, days_data: List[Dict]) -> Dict[str, Any]:
     """
     Analysoi koko työvuorolistan.
     
@@ -321,7 +263,6 @@ def analyze_schedule(
             'total_issues': 0,
             'total_warnings': 0,
             'stcw_violations': 0,
-            'buffer_violations': 0,
             'op_coverage_gaps': 0,
             'hour_imbalances': 0
         }
@@ -332,21 +273,29 @@ def analyze_schedule(
         info = days_data[d]
         
         # Op-ajat
-        op_ranges = get_port_operation_ranges(info)
+        op_start_h = info.get('port_op_start_hour')
+        op_end_h = info.get('port_op_end_hour')
+        
+        if op_start_h is not None:
+            op_start = op_start_h * 2
+            if op_end_h is not None and op_end_h < op_start_h:
+                op_end = 48
+            elif op_end_h == 0 and op_start_h > 0:
+                op_end = 48
+            elif op_end_h is not None:
+                op_end = op_end_h * 2
+            else:
+                op_end = NORMAL_END
+        else:
+            op_start = NORMAL_START
+            op_end = NORMAL_END
         
         # Työntekijäanalyysit
         for dm in daymen:
             day_data = all_days[dm][d]
             prev_day_data = all_days[dm][d - 1] if d > 0 else None
             
-            worker_analysis = analyze_worker_day(
-                dm,
-                d,
-                day_data,
-                prev_day_data,
-                stcw_longest_rest_hours=stcw_longest_rest_hours,
-                buffer_longest_rest_hours=buffer_longest_rest_hours,
-            )
+            worker_analysis = analyze_worker_day(dm, d, day_data, prev_day_data)
             analysis['worker_analyses'].append(worker_analysis)
             
             # Päivitä yhteenveto
@@ -356,15 +305,11 @@ def analyze_schedule(
             for issue in worker_analysis['issues']:
                 if 'STCW' in issue:
                     analysis['summary']['stcw_violations'] += 1
-            for warning in worker_analysis['warnings']:
-                if warning.startswith("BUFFER("):
-                    analysis['summary']['buffer_violations'] += 1
         
         # Op-kattavuusanalyysi
-        for op_start, op_end in op_ranges:
-            op_analysis = analyze_op_coverage(all_days, d, op_start, op_end)
-            analysis['op_coverage_analyses'].append(op_analysis)
-            analysis['summary']['op_coverage_gaps'] += len(op_analysis['gaps'])
+        op_analysis = analyze_op_coverage(all_days, d, op_start, op_end)
+        analysis['op_coverage_analyses'].append(op_analysis)
+        analysis['summary']['op_coverage_gaps'] += len(op_analysis['gaps'])
         
         # Tuntitasapainoanalyysi
         balance_analysis = analyze_hour_balance(all_days, d)
@@ -395,8 +340,6 @@ def format_analysis_report(analysis: Dict) -> str:
     else:
         if summary['stcw_violations'] > 0:
             lines.append(f"❌ STCW-rikkeitä: {summary['stcw_violations']}")
-        if summary.get('buffer_violations', 0) > 0:
-            lines.append(f"⚠️ Buffer-varoituksia: {summary['buffer_violations']}")
         if summary['op_coverage_gaps'] > 0:
             lines.append(f"⚠️ Op-kattavuusaukkoja: {summary['op_coverage_gaps']}")
         if summary['hour_imbalances'] > 0:
