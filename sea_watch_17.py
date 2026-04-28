@@ -1170,6 +1170,141 @@ def rebalance_dayman_hours(
             break
 
 
+def fix_stcw_violations(
+    dm_work,
+    dm_ops,
+    dm_arr,
+    dm_dep,
+    dm_sluice,
+    dm_shifting,
+    active_daymen,
+    day_idx,
+    times,
+    constraints,
+    prev_day_work,
+    min_longest_rest_hours=6,
+):
+    """
+    VAIHE 6: Korjaa STCW-rikkeet jälkikäteen.
+    
+    Jos työntekijällä on STCW-rike (alle 10h lepoa tai alle 6h pisin lepo
+    jossain 24h ikkunassa), yritetään siirtää slotteja toiselle työntekijälle.
+    
+    Priorisoi aamuslottien siirtämistä (08:00 alkaen) koska iltavuoro edelliseltä
+    päivältä + aamuvuoro on yleisin rikkeen syy.
+    """
+    max_iterations = 100
+    
+    for iteration in range(max_iterations):
+        violation_found = False
+        
+        for dm in active_daymen:
+            ok, worst_slot, analysis = check_stcw_sliding(
+                prev_day_work.get(dm, [False] * 48),
+                dm_work[dm],
+                min_longest_rest_hours
+            )
+            
+            if ok:
+                continue
+            
+            violation_found = True
+            
+            # Etsitään siirrettäviä slotteja - priorisoi aamuslotit
+            # koska iltavuoro + aamuvuoro aiheuttaa yleensä rikkeen
+            moved = False
+            
+            # Käy läpi aamuslotit ensin (08:00-12:00), sitten muut
+            morning_slots = list(range(NORMAL_START, LUNCH_START))  # 08:00-11:30
+            other_slots = list(range(LUNCH_END, NORMAL_END))  # 12:00-17:00
+            
+            for slot in morning_slots + other_slots:
+                if not dm_work[dm][slot]:
+                    continue
+                
+                # Älä siirrä pakollisia
+                if (dm_arr[dm][slot] or dm_dep[dm][slot] or 
+                    dm_sluice[dm][slot] or dm_shifting[dm][slot] or
+                    must_work_slot(dm, slot, day_idx, constraints)):
+                    continue
+                
+                # Etsi toinen työntekijä joka voi ottaa slotin
+                for receiver in active_daymen:
+                    if receiver == dm:
+                        continue
+                    
+                    if dm_work[receiver][slot]:
+                        continue  # Receiver jo töissä tässä slotissa
+                    
+                    receiver_hours = sum(dm_work[receiver]) / 2
+                    receiver_max = get_max_hours(receiver, constraints)
+                    
+                    if receiver_hours >= receiver_max:
+                        continue
+                    
+                    if not can_work_slot(receiver, slot, day_idx, constraints, receiver_hours):
+                        continue
+                    
+                    # Testaa siirto
+                    dm_test = dm_work[dm][:]
+                    dm_test[slot] = False
+                    
+                    receiver_test = dm_work[receiver][:]
+                    receiver_test[slot] = True
+                    
+                    # Tarkista että siirto parantaa tilannetta (ei välttämättä korjaa kokonaan)
+                    dm_ok_after, _, new_analysis = check_stcw_sliding(
+                        prev_day_work.get(dm, [False] * 48),
+                        dm_test,
+                        min_longest_rest_hours
+                    )
+                    
+                    # Jos tilanne ei parane, ohita
+                    if not dm_ok_after:
+                        old_rest = analysis['total_rest']
+                        new_rest = new_analysis['total_rest'] if new_analysis else 0
+                        if new_rest <= old_rest:
+                            continue
+                    
+                    # Tarkista ettei siirto aiheuta rikettä receiverille
+                    receiver_ok, _, _ = check_stcw_sliding(
+                        prev_day_work.get(receiver, [False] * 48),
+                        receiver_test,
+                        min_longest_rest_hours
+                    )
+                    
+                    if not receiver_ok:
+                        continue  # Siirto aiheuttaisi rikkeen receiverille
+                    
+                    # Tarkista donor min tunnit
+                    dm_hours_after = sum(dm_test) / 2
+                    if dm_hours_after < get_min_hours(dm, constraints):
+                        continue
+                    
+                    # Op-kattavuus tarkistus
+                    is_op = is_op_slot(times, slot)
+                    
+                    # Tee siirto
+                    dm_work[dm][slot] = False
+                    dm_work[receiver][slot] = True
+                    
+                    if is_op:
+                        dm_ops[dm][slot] = False
+                        dm_ops[receiver][slot] = True
+                    
+                    moved = True
+                    break
+                
+                if moved:
+                    break
+            
+            if moved:
+                break  # Aloita uusi iteraatio alusta
+        
+        if not violation_found:
+            break  # Kaikki OK
+
+
 # ============================================================================
 # BOSUN JA WATCHMANIT
 # ============================================================================
@@ -1370,6 +1505,13 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
             active_daymen, day_idx, times, constraints, prev_day_work,
             min_longest_rest_hours=min_longest_rest_hours,
             max_diff_hours=1.0
+        )
+        
+        # VAIHE 6: Korjaa STCW-rikkeet
+        fix_stcw_violations(
+            dm_work, dm_ops, dm_arr, dm_dep, dm_sluice, dm_shifting,
+            active_daymen, day_idx, times, constraints, prev_day_work,
+            min_longest_rest_hours=min_longest_rest_hours
         )
         
         # Tallenna daymanien tulokset
