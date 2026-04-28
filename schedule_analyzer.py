@@ -57,6 +57,11 @@ def analyze_worker_day(worker: str, day_idx: int, day_data: Dict,
         # Käytä liukuvaa 24h ikkunaa
         ok, worst_slot, stcw_result = check_stcw_sliding(prev_work, work)
         
+        # DEBUG
+        print(f"DEBUG STCW {worker} päivä {day_idx+1}: ok={ok}, worst_slot={worst_slot}")
+        if stcw_result:
+            print(f"  -> total_rest={stcw_result['total_rest']}h, longest_rest={stcw_result['longest_rest']}h")
+        
         if not ok:
             worst_time_h = worst_slot // 2
             worst_time_m = '30' if worst_slot % 2 else '00'
