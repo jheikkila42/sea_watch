@@ -246,6 +246,57 @@ def check_stcw_at_slot(work_48h, end_slot, min_longest_rest_hours=6):
     }
 
 
+def find_earliest_valid_start(prev_day_work, min_hours=MIN_HOURS, min_longest_rest_hours=6):
+    """
+    Etsii aikaisimman aloitusslottin jolla työpäivä ei riko STCW:tä.
+    
+    Simuloi työpäivän eri aloitusajoilla ja tarkistaa STCW:n.
+    Olettaa että työntekijä tekee min_hours tunnin työpäivän.
+    
+    Args:
+        prev_day_work: Edellisen päivän työvuoro (48 slottia)
+        min_hours: Tavoitetunnit (oletus 8h)
+        min_longest_rest_hours: STCW pisin lepo vaatimus
+    
+    Returns:
+        Aikaisin mahdollinen aloitusslotti (esim. 16 = 08:00, 18 = 09:00)
+    """
+    if prev_day_work is None:
+        return NORMAL_START
+    
+    # Jos edellispäivänä ei töitä, voi aloittaa normaalisti
+    if not any(prev_day_work):
+        return NORMAL_START
+    
+    target_slots = int(min_hours * 2)  # 8h = 16 slottia
+    
+    # Kokeile eri aloitusaikoja
+    for start_slot in range(NORMAL_START, NORMAL_END):
+        # Simuloi työpäivä tästä aloituksesta
+        test_work = [False] * 48
+        slots_added = 0
+        slot = start_slot
+        
+        while slots_added < target_slots and slot < 48:
+            # Ohita lounas
+            if LUNCH_START <= slot < LUNCH_END:
+                slot += 1
+                continue
+            test_work[slot] = True
+            slots_added += 1
+            slot += 1
+        
+        # Tarkista STCW
+        ok, _, _ = check_stcw_sliding(prev_day_work, test_work, min_longest_rest_hours)
+        
+        if ok:
+            return start_slot
+    
+    # Jos mikään aloitusaika ei toimi normaalityöaikana, 
+    # palauta NORMAL_START ja anna fix_stcw_violations hoitaa
+    return NORMAL_START
+
+
 # ============================================================================
 # RAJOITTEIDEN KÄSITTELY
 # ============================================================================
@@ -831,6 +882,7 @@ def _find_best_worker_for_inside_slot(slot, active_daymen, dm_work, prev_day_wor
                                        day_idx, constraints, min_longest_rest_hours=6):
     """
     Apufunktio: Etsii parhaan työntekijän 08-17 slotille.
+    Huomioi STCW:n mukaisen aikaisimman aloitusajan.
     """
     best_dm = None
     best_score = -9999
@@ -845,6 +897,17 @@ def _find_best_worker_for_inside_slot(slot, active_daymen, dm_work, prev_day_wor
         if not can_work_slot(dm, slot, day_idx, constraints, current_hours):
             continue
         
+        # Tarkista aikaisin mahdollinen aloitus STCW:n perusteella
+        earliest_start = find_earliest_valid_start(
+            prev_day_work.get(dm, [False] * 48),
+            min_hours=get_min_hours(dm, constraints),
+            min_longest_rest_hours=min_longest_rest_hours
+        )
+        
+        # Jos slotti on ennen aikaisinta sallittua aloitusta, ohita
+        if slot < earliest_start:
+            continue
+        
         score = 0
         
         if slot > 0 and dm_work[dm][slot - 1]:
@@ -856,7 +919,7 @@ def _find_best_worker_for_inside_slot(slot, active_daymen, dm_work, prev_day_wor
         test_work[slot] = True
         stcw_ok = check_stcw_ok(
             test_work,
-            prev_day_work[dm],
+            prev_day_work.get(dm, [False] * 48),
             min_longest_rest_hours=min_longest_rest_hours
         )
         
@@ -872,12 +935,17 @@ def _find_best_worker_for_inside_slot(slot, active_daymen, dm_work, prev_day_wor
     return best_dm
 
 
-def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constraints):
+def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constraints,
+                         prev_day_work=None, min_longest_rest_hours=6):
     """
-    Vaihe 3.2: Täytä loput tunnit 08:00 alkaen.
+    Vaihe 3.2: Täytä loput tunnit aikaisimmasta sallitusta aloitusajasta.
+    Huomioi STCW:n mukaisen aikaisimman aloitusajan.
     """
     op_start = times['op_start']
     op_end = times['op_end']
+    
+    if prev_day_work is None:
+        prev_day_work = {dm: [False] * 48 for dm in active_daymen}
     
     for dm in active_daymen:
         current_hours = sum(dm_work[dm]) / 2
@@ -895,7 +963,16 @@ def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constra
                                day_idx, constraints)
             continue
         
-        slot = NORMAL_START
+        # Laske aikaisin mahdollinen aloitus STCW:n perusteella
+        earliest_start = find_earliest_valid_start(
+            prev_day_work.get(dm, [False] * 48),
+            min_hours=min_h,
+            min_longest_rest_hours=min_longest_rest_hours
+        )
+        
+        # Aloita aikaisimmasta sallitusta slotista
+        slot = max(NORMAL_START, earliest_start)
+        
         while current_hours < min_h and slot < NORMAL_END:
             if LUNCH_START <= slot < LUNCH_END:
                 slot += 1
@@ -917,6 +994,27 @@ def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constra
                 dm_ops[dm][slot] = True
             current_hours = sum(dm_work[dm]) / 2
             slot += 1
+        
+        # Jos tunnit eivät riitä, jatka iltapäivään/iltaan (NORMAL_END jälkeen)
+        if current_hours < min_h:
+            for slot in range(NORMAL_END, 48):
+                if current_hours >= min_h:
+                    break
+                if dm_work[dm][slot]:
+                    continue
+                if not can_work_slot(dm, slot, day_idx, constraints, current_hours):
+                    continue
+                
+                # Tarkista STCW ennen lisäämistä
+                test_work = dm_work[dm][:]
+                test_work[slot] = True
+                if not check_stcw_ok(test_work, prev_day_work.get(dm, [False] * 48), min_longest_rest_hours):
+                    continue
+                
+                dm_work[dm][slot] = True
+                if is_op_slot(times, slot):
+                    dm_ops[dm][slot] = True
+                current_hours = sum(dm_work[dm]) / 2
 
 
 def _extend_night_shift(dm, dm_work, dm_ops, op_start, op_end, min_h, max_h, 
@@ -1492,7 +1590,8 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
             dm_work, dm_ops, active_daymen, day_idx, times, constraints, prev_day_work,
             min_longest_rest_hours=min_longest_rest_hours
         )
-        fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constraints)
+        fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constraints,
+                            prev_day_work=prev_day_work, min_longest_rest_hours=min_longest_rest_hours)
         ensure_op_coverage(dm_work, dm_ops, op_inside_slots, active_daymen, day_idx, constraints)
         fill_gaps_between_blocks(dm_work, dm_ops, active_daymen, day_idx, times, constraints)
         
