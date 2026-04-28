@@ -135,7 +135,14 @@ def init_operation_count(key: str, default: int = 1):
         st.session_state[key] = default
 
 
-def parse_operation_entries(section_key: str, day: int, operation_key: str, label: str, default_count: int = 1):
+def parse_operation_entries(
+    section_key: str,
+    day: int,
+    operation_key: str,
+    label: str,
+    default_count: int = 1,
+    sluice_checkbox_label: str = None,
+):
     """Renderöi toistettavat aikakentät yhdelle operaatiotyypille."""
     count_key = f"{section_key}_{operation_key}_count_{day}"
     init_operation_count(count_key, default=default_count)
@@ -147,8 +154,14 @@ def parse_operation_entries(section_key: str, day: int, operation_key: str, labe
             f"{label}{suffix}",
             key=f"{section_key}_{operation_key}_{day}_{idx}",
         )
+        as_sluice = False
+        if sluice_checkbox_label is not None:
+            as_sluice = st.checkbox(
+                f"{sluice_checkbox_label}{suffix}",
+                key=f"{section_key}_{operation_key}_sluice_{day}_{idx}",
+            )
         if h is not None:
-            entries.append({"hour": h, "minute": m or 0})
+            entries.append({"hour": h, "minute": m or 0, "as_sluice": as_sluice})
 
     if st.button(f"➕ Lisää uusi {label.lower()}", key=f"add_{count_key}"):
         st.session_state[count_key] += 1
@@ -177,15 +190,19 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
 
             with row1_col1:
                 st.markdown("#### Tulo ja lähtö")
-                arrivals = parse_operation_entries(key_prefix, day, "arr", "Satamaan tuloaika (HH:MM)")
-                arrival_as_sluice = st.checkbox(
-                    "tuloa edeltää slussi",
-                    key=f"{key_prefix}_arrival_as_sluice_{day}",
+                arrivals = parse_operation_entries(
+                    key_prefix,
+                    day,
+                    "arr",
+                    "Satamaan tuloaika (HH:MM)",
+                    sluice_checkbox_label="tuloa edeltää slussi",
                 )
-                departures = parse_operation_entries(key_prefix, day, "dep", "Satamasta lähtöaika (HH:MM)")
-                departure_as_sluice = st.checkbox(
-                    "lähdön jälkeen slussi",
-                    key=f"{key_prefix}_departure_as_sluice_{day}",
+                departures = parse_operation_entries(
+                    key_prefix,
+                    day,
+                    "dep",
+                    "Satamasta lähtöaika (HH:MM)",
+                    sluice_checkbox_label="lähdön jälkeen slussi",
                 )
 
             with row1_col2:
@@ -199,10 +216,10 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
             with row2_col2:
                 st.empty()
 
-            effective_arrivals = [] if arrival_as_sluice else arrivals
-            effective_departures = [] if departure_as_sluice else departures
-            sluice_arrivals = arrivals if arrival_as_sluice else []
-            sluice_departures = departures if departure_as_sluice else []
+            effective_arrivals = [e for e in arrivals if not e.get("as_sluice")]
+            effective_departures = [e for e in departures if not e.get("as_sluice")]
+            sluice_arrivals = [e for e in arrivals if e.get("as_sluice")]
+            sluice_departures = [e for e in departures if e.get("as_sluice")]
 
             arr_h, arr_m = first_operation_entry(effective_arrivals)
             dep_h, dep_m = first_operation_entry(effective_departures)
