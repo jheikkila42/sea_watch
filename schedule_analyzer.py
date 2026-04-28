@@ -25,7 +25,8 @@ from sea_watch_17 import (
 
 
 def analyze_worker_day(worker: str, day_idx: int, day_data: Dict, 
-                       prev_day_data: Dict = None) -> Dict[str, Any]:
+                       prev_day_data: Dict = None,
+                       min_longest_rest_hours: float = 6) -> Dict[str, Any]:
     """
     Analysoi yhden työntekijän yhden päivän vuorot.
     
@@ -55,7 +56,7 @@ def analyze_worker_day(worker: str, day_idx: int, day_data: Dict,
         prev_work = prev_day_data['work_slots']
         
         # Käytä liukuvaa 24h ikkunaa
-        ok, worst_slot, stcw_result = check_stcw_sliding(prev_work, work)
+        ok, worst_slot, stcw_result = check_stcw_sliding(prev_work, work, min_longest_rest_hours)
         
         # DEBUG
         print(f"DEBUG STCW {worker} päivä {day_idx+1}: ok={ok}, worst_slot={worst_slot}")
@@ -245,19 +246,26 @@ def analyze_hour_balance(all_days: Dict, day_idx: int) -> Dict[str, Any]:
     }
 
 
-def analyze_schedule(all_days: Dict, days_data: List[Dict]) -> Dict[str, Any]:
+def analyze_schedule(all_days: Dict, days_data: List[Dict], 
+                     stcw_longest_rest_hours: float = 6,
+                     buffer_longest_rest_hours: float = None) -> Dict[str, Any]:
     """
     Analysoi koko työvuorolistan.
     
     Args:
         all_days: Generaattorin palauttama all_days-rakenne
         days_data: Alkuperäinen days_data syöte
+        stcw_longest_rest_hours: STCW-vertailuraja pisimmälle levolle
+        buffer_longest_rest_hours: Puskuriraja (valinnainen)
     
     Returns:
         Kattava analyysi kaikista päivistä
     """
     num_days = len(days_data)
     daymen = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+    
+    # Käytä buffer-arvoa jos annettu, muuten stcw-arvoa
+    min_longest_rest = buffer_longest_rest_hours if buffer_longest_rest_hours else stcw_longest_rest_hours
     
     analysis = {
         'num_days': num_days,
@@ -300,7 +308,7 @@ def analyze_schedule(all_days: Dict, days_data: List[Dict]) -> Dict[str, Any]:
             day_data = all_days[dm][d]
             prev_day_data = all_days[dm][d - 1] if d > 0 else None
             
-            worker_analysis = analyze_worker_day(dm, d, day_data, prev_day_data)
+            worker_analysis = analyze_worker_day(dm, d, day_data, prev_day_data, min_longest_rest)
             analysis['worker_analyses'].append(worker_analysis)
             
             # Päivitä yhteenveto
