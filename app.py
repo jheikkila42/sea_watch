@@ -135,7 +135,14 @@ def init_operation_count(key: str, default: int = 1):
         st.session_state[key] = default
 
 
-def parse_operation_entries(section_key: str, day: int, operation_key: str, label: str, default_count: int = 1):
+def parse_operation_entries(
+    section_key: str,
+    day: int,
+    operation_key: str,
+    label: str,
+    default_count: int = 1,
+    sluice_checkbox_label: str = None,
+):
     """Renderöi toistettavat aikakentät yhdelle operaatiotyypille."""
     count_key = f"{section_key}_{operation_key}_count_{day}"
     init_operation_count(count_key, default=default_count)
@@ -147,8 +154,14 @@ def parse_operation_entries(section_key: str, day: int, operation_key: str, labe
             f"{label}{suffix}",
             key=f"{section_key}_{operation_key}_{day}_{idx}",
         )
+        as_sluice = False
+        if sluice_checkbox_label is not None:
+            as_sluice = st.checkbox(
+                f"{sluice_checkbox_label}{suffix}",
+                key=f"{section_key}_{operation_key}_sluice_{day}_{idx}",
+            )
         if h is not None:
-            entries.append({"hour": h, "minute": m or 0})
+            entries.append({"hour": h, "minute": m or 0, "as_sluice": as_sluice})
 
     if st.button(f"➕ Lisää uusi {label.lower()}", key=f"add_{count_key}"):
         st.session_state[count_key] += 1
@@ -164,6 +177,17 @@ def first_operation_entry(entries):
     return None, 0
 
 
+def shift_entry_minutes(entry, delta_minutes):
+    """Siirtää yksittäisen aika-entryn minuuteissa (rajataan vuorokauden sisään)."""
+    total = entry["hour"] * 60 + entry.get("minute", 0) + delta_minutes
+    total = max(0, min((24 * 60) - 1, total))
+    return {
+        "hour": total // 60,
+        "minute": total % 60,
+        "as_sluice": entry.get("as_sluice", False),
+    }
+
+
 # ============================================================================
 # PÄIVIEN DATA
 # ============================================================================
@@ -177,8 +201,20 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
 
             with row1_col1:
                 st.markdown("#### Tulo ja lähtö")
-                arrivals = parse_operation_entries(key_prefix, day, "arr", "Satamaan tuloaika (HH:MM)")
-                departures = parse_operation_entries(key_prefix, day, "dep", "Satamasta lähtöaika (HH:MM)")
+                arrivals = parse_operation_entries(
+                    key_prefix,
+                    day,
+                    "arr",
+                    "Satamaan tuloaika (HH:MM)",
+                    sluice_checkbox_label="tuloa edeltää slussi",
+                )
+                departures = parse_operation_entries(
+                    key_prefix,
+                    day,
+                    "dep",
+                    "Satamasta lähtöaika (HH:MM)",
+                    sluice_checkbox_label="lähdön jälkeen slussi",
+                )
 
             with row1_col2:
                 st.markdown("#### Satamaoperaatiot")
@@ -186,16 +222,20 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
                 port_op_ends = parse_operation_entries(key_prefix, day, "opend", "Satamaoperaation loppu (HH:MM)")
 
             with row2_col1:
-                st.markdown("#### Slussi")
-                sluice_arrivals = parse_operation_entries(key_prefix, day, "sluice_arr", "Slussi - tulo alku (HH:MM, kesto 2h)")
-                sluice_departures = parse_operation_entries(key_prefix, day, "sluice_dep", "Slussi - lähtö alku (HH:MM, kesto 2h)")
-
-            with row2_col2:
                 st.markdown("#### Shiftaus")
                 shiftings = parse_operation_entries(key_prefix, day, "shifting", "Shiftaus alku (HH:MM, kesto 1h)")
+            with row2_col2:
+                st.empty()
 
-            arr_h, arr_m = first_operation_entry(arrivals)
-            dep_h, dep_m = first_operation_entry(departures)
+            effective_arrivals = [e for e in arrivals if not e.get("as_sluice")]
+            effective_departures = [e for e in departures if not e.get("as_sluice")]
+            sluice_arrivals = [
+                shift_entry_minutes(e, -120) for e in arrivals if e.get("as_sluice")
+            ]
+            sluice_departures = [e for e in departures if e.get("as_sluice")]
+
+            arr_h, arr_m = first_operation_entry(effective_arrivals)
+            dep_h, dep_m = first_operation_entry(effective_departures)
             op_s_h, op_s_m = first_operation_entry(port_op_starts)
             op_e_h, op_e_m = first_operation_entry(port_op_ends)
             sluice_arr_h, sluice_arr_m = first_operation_entry(sluice_arrivals)
@@ -203,8 +243,8 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
             shifting_h, shifting_m = first_operation_entry(shiftings)
 
             days.append({
-                "arrivals": arrivals,
-                "departures": departures,
+                "arrivals": effective_arrivals,
+                "departures": effective_departures,
                 "port_operations": [
                     {"start_hour": start["hour"], "start_minute": start["minute"], "end_hour": end["hour"], "end_minute": end["minute"]}
                     for start, end in zip(port_op_starts, port_op_ends)
@@ -362,6 +402,25 @@ def render_results(num_days, wb, all_days):
         file_name="tyovuorot.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+def render_frontpage_stcw_warning():
+    """Näyttää etusivulla STCW-rikevaroituksen generoinnin jälkeen."""
+    analysis = st.session_state.analysis
+    if not analysis:
+        return
+
+    stcw_items = []
+    for wa in analysis.get("worker_analyses", []):
+        for issue in wa.get("issues", []):
+            if "STCW" in issue:
+                stcw_items.append(f"{wa['worker']} / päivä {wa['day']}: {issue}")
+
+    if stcw_items:
+        st.error("⚠️ STCW-rike havaittu generoimassasi työvuorolistassa.")
+        st.markdown("**Syy(t):**")
+        for item in stcw_items:
+            st.markdown(f"- {item}")
 
 
 def render_post_generation_editor():
@@ -754,13 +813,15 @@ def main():
     st.title("🛳️ Sea Watch - Työvuorolistageneraattori")
     
     # Välilehdet
-    tab_auto, tab_manual, tab_edit, tab_analysis, tab_chat = st.tabs([
+    tab_auto, tab_manual, tab_chat = st.tabs([
         "📝 Automaattinen syöttö", 
         "✋ Päivä 1 manuaalinen",
-        "✏️ Muokkaa vuoroja",
-        "📊 Analyysi",
         "💬 AI Chat"
     ])
+
+    # Etusivun varoitus heti generoinnin jälkeen
+    if st.session_state.generated_all_days is not None:
+        render_frontpage_stcw_warning()
     
     # Tab 1: Automaattinen syöttö
     with tab_auto:
@@ -847,18 +908,7 @@ def main():
             store_generated_result(wb, all_days, days_data, num_days, rest_config=rest_config)
             st.success("✅ Työvuorot generoitu!")
     
-    # Tab 3: Muokkaa vuoroja
-    with tab_edit:
-        if st.session_state.generated_all_days is None:
-            st.info("Generoi ensin työvuorot, jotta voit muokata niitä.")
-        else:
-            render_post_generation_editor()
-
-    # Tab 4: Analyysi
-    with tab_analysis:
-        render_analysis_tab()
-    
-    # Tab 5: AI Chat
+    # Tab 3: AI Chat
     with tab_chat:
         render_chat_tab()
 
