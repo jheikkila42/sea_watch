@@ -364,6 +364,25 @@ def render_results(num_days, wb, all_days):
     )
 
 
+def render_frontpage_stcw_warning():
+    """Näyttää etusivulla STCW-rikevaroituksen generoinnin jälkeen."""
+    analysis = st.session_state.analysis
+    if not analysis:
+        return
+
+    stcw_items = []
+    for wa in analysis.get("worker_analyses", []):
+        for issue in wa.get("issues", []):
+            if "STCW" in issue:
+                stcw_items.append(f"{wa['worker']} / päivä {wa['day']}: {issue}")
+
+    if stcw_items:
+        st.error("⚠️ STCW-rike havaittu generoimassasi työvuorolistassa.")
+        st.markdown("**Syy(t):**")
+        for item in stcw_items:
+            st.markdown(f"- {item}")
+
+
 def render_post_generation_editor():
     if st.session_state.generated_all_days is None:
         return
@@ -754,13 +773,15 @@ def main():
     st.title("🛳️ Sea Watch - Työvuorolistageneraattori")
     
     # Välilehdet
-    tab_auto, tab_manual, tab_edit, tab_analysis, tab_chat = st.tabs([
+    tab_auto, tab_manual, tab_chat = st.tabs([
         "📝 Automaattinen syöttö", 
         "✋ Päivä 1 manuaalinen",
-        "✏️ Muokkaa vuoroja",
-        "📊 Analyysi",
         "💬 AI Chat"
     ])
+
+    # Etusivun varoitus heti generoinnin jälkeen
+    if st.session_state.generated_all_days is not None:
+        render_frontpage_stcw_warning()
     
     # Tab 1: Automaattinen syöttö
     with tab_auto:
@@ -847,18 +868,7 @@ def main():
             store_generated_result(wb, all_days, days_data, num_days, rest_config=rest_config)
             st.success("✅ Työvuorot generoitu!")
     
-    # Tab 3: Muokkaa vuoroja
-    with tab_edit:
-        if st.session_state.generated_all_days is None:
-            st.info("Generoi ensin työvuorot, jotta voit muokata niitä.")
-        else:
-            render_post_generation_editor()
-
-    # Tab 4: Analyysi
-    with tab_analysis:
-        render_analysis_tab()
-    
-    # Tab 5: AI Chat
+    # Tab 3: AI Chat
     with tab_chat:
         render_chat_tab()
 
