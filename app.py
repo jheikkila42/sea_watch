@@ -178,7 +178,15 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
             with row1_col1:
                 st.markdown("#### Tulo ja lähtö")
                 arrivals = parse_operation_entries(key_prefix, day, "arr", "Satamaan tuloaika (HH:MM)")
+                arrival_as_sluice = st.checkbox(
+                    "tuloa edeltää slussi",
+                    key=f"{key_prefix}_arrival_as_sluice_{day}",
+                )
                 departures = parse_operation_entries(key_prefix, day, "dep", "Satamasta lähtöaika (HH:MM)")
+                departure_as_sluice = st.checkbox(
+                    "lähdön jälkeen slussi",
+                    key=f"{key_prefix}_departure_as_sluice_{day}",
+                )
 
             with row1_col2:
                 st.markdown("#### Satamaoperaatiot")
@@ -186,16 +194,18 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
                 port_op_ends = parse_operation_entries(key_prefix, day, "opend", "Satamaoperaation loppu (HH:MM)")
 
             with row2_col1:
-                st.markdown("#### Slussi")
-                sluice_arrivals = parse_operation_entries(key_prefix, day, "sluice_arr", "Slussi - tulo alku (HH:MM, kesto 2h)")
-                sluice_departures = parse_operation_entries(key_prefix, day, "sluice_dep", "Slussi - lähtö alku (HH:MM, kesto 2h)")
-
-            with row2_col2:
                 st.markdown("#### Shiftaus")
                 shiftings = parse_operation_entries(key_prefix, day, "shifting", "Shiftaus alku (HH:MM, kesto 1h)")
+            with row2_col2:
+                st.empty()
 
-            arr_h, arr_m = first_operation_entry(arrivals)
-            dep_h, dep_m = first_operation_entry(departures)
+            effective_arrivals = [] if arrival_as_sluice else arrivals
+            effective_departures = [] if departure_as_sluice else departures
+            sluice_arrivals = arrivals if arrival_as_sluice else []
+            sluice_departures = departures if departure_as_sluice else []
+
+            arr_h, arr_m = first_operation_entry(effective_arrivals)
+            dep_h, dep_m = first_operation_entry(effective_departures)
             op_s_h, op_s_m = first_operation_entry(port_op_starts)
             op_e_h, op_e_m = first_operation_entry(port_op_ends)
             sluice_arr_h, sluice_arr_m = first_operation_entry(sluice_arrivals)
@@ -203,8 +213,8 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
             shifting_h, shifting_m = first_operation_entry(shiftings)
 
             days.append({
-                "arrivals": arrivals,
-                "departures": departures,
+                "arrivals": effective_arrivals,
+                "departures": effective_departures,
                 "port_operations": [
                     {"start_hour": start["hour"], "start_minute": start["minute"], "end_hour": end["hour"], "end_minute": end["minute"]}
                     for start, end in zip(port_op_starts, port_op_ends)
