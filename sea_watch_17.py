@@ -71,11 +71,21 @@ def get_work_ranges(work_slots):
 
 
 def add_block(work_list, start, end, marker_list=None):
-    """Lisää työblokin slottilistaan."""
-    for i in range(start, min(end, 48)):
-        work_list[i] = True
-        if marker_list is not None:
-            marker_list[i] = True
+    """
+    Lisää työblokin slottilistaan.
+    
+    Returns:
+        overflow: Montako slottia meni yli päivän (0 jos ei ylivuotoa)
+    """
+    overflow = 0
+    for i in range(start, end):
+        if i < 48:
+            work_list[i] = True
+            if marker_list is not None:
+                marker_list[i] = True
+        else:
+            overflow += 1
+    return overflow
 
 
 def get_work_blocks(work_slots):
@@ -656,10 +666,19 @@ def apply_departure_slots(dm_work, dm_dep, active_daymen, day_idx, times, constr
             add_block(dm_work[dm], departure_start, departure_start + 2, dm_dep[dm])
 
 
-def apply_sluice_arrival_slots(dm_work, dm_sluice, daymen, times):
+def apply_sluice_arrival_slots(dm_work, dm_sluice, daymen, times, pending_next_day=None):
     """
-    Vaihe 1.3: Slussi tulo - 1. tunti 2 dm, 2. tunti 3 dm (2h kokonaan).
+    Vaihe 1.3: Slussi tulo - 1. tunti 2 dm, loput 1.5h 3 dm (2.5h kokonaan).
+    
+    Args:
+        pending_next_day: Dict johon tallennetaan ylivuoto seuraavalle päivälle
+    
+    Returns:
+        pending_next_day päivitettynä
     """
+    if pending_next_day is None:
+        pending_next_day = {dm: {'work': [], 'sluice': []} for dm in daymen}
+    
     for sluice_arr_start in times.get('sluice_arr_starts', []):
         scores = {}
         for dm in daymen:
@@ -668,17 +687,42 @@ def apply_sluice_arrival_slots(dm_work, dm_sluice, daymen, times):
 
         first_hour_dm = sorted(daymen, key=lambda x: scores[x], reverse=True)[:2]
 
+        # 1. tunti (2 slottia) - 2 daymaniä
         for dm in first_hour_dm:
-            add_block(dm_work[dm], sluice_arr_start, sluice_arr_start + 2, dm_sluice[dm])
+            overflow = add_block(dm_work[dm], sluice_arr_start, sluice_arr_start + 2, dm_sluice[dm])
+            if overflow > 0:
+                for i in range(overflow):
+                    pending_next_day[dm]['work'].append(i)
+                    pending_next_day[dm]['sluice'].append(i)
 
+        # Loput 1.5h (3 slottia) - kaikki 3 daymaniä
         for dm in daymen:
-            add_block(dm_work[dm], sluice_arr_start + 2, sluice_arr_start + 4, dm_sluice[dm])
+            overflow = add_block(dm_work[dm], sluice_arr_start + 2, sluice_arr_start + 5, dm_sluice[dm])
+            if overflow > 0:
+                # Laske mitkä slotit vuotavat yli (sluice_arr_start + 2 + (5-overflow) = ensimmäinen ylivuoto)
+                first_overflow_slot = sluice_arr_start + 5 - overflow
+                for i in range(overflow):
+                    next_day_slot = (first_overflow_slot + i) - 48
+                    if next_day_slot not in pending_next_day[dm]['work']:
+                        pending_next_day[dm]['work'].append(next_day_slot)
+                        pending_next_day[dm]['sluice'].append(next_day_slot)
+    
+    return pending_next_day
 
 
-def apply_sluice_departure_slots(dm_work, dm_sluice, daymen, times):
+def apply_sluice_departure_slots(dm_work, dm_sluice, daymen, times, pending_next_day=None):
     """
-    Vaihe 1.4: Slussi lähtö - 2 daymaniä (2h).
+    Vaihe 1.4: Slussi lähtö - 2 daymaniä (2.5h).
+    
+    Args:
+        pending_next_day: Dict johon tallennetaan ylivuoto seuraavalle päivälle
+    
+    Returns:
+        pending_next_day päivitettynä
     """
+    if pending_next_day is None:
+        pending_next_day = {dm: {'work': [], 'sluice': []} for dm in daymen}
+    
     for sluice_dep_start in times.get('sluice_dep_starts', []):
         scores = {}
         for dm in daymen:
@@ -688,7 +732,17 @@ def apply_sluice_departure_slots(dm_work, dm_sluice, daymen, times):
 
         selected = sorted(daymen, key=lambda x: scores[x], reverse=True)[:2]
         for dm in selected:
-            add_block(dm_work[dm], sluice_dep_start, sluice_dep_start + 4, dm_sluice[dm])
+            # 2.5h = 5 slottia
+            overflow = add_block(dm_work[dm], sluice_dep_start, sluice_dep_start + 5, dm_sluice[dm])
+            if overflow > 0:
+                first_overflow_slot = sluice_dep_start + 5 - overflow
+                for i in range(overflow):
+                    next_day_slot = (first_overflow_slot + i) - 48
+                    if next_day_slot not in pending_next_day[dm]['work']:
+                        pending_next_day[dm]['work'].append(next_day_slot)
+                        pending_next_day[dm]['sluice'].append(next_day_slot)
+    
+    return pending_next_day
 
 
 def apply_shifting_slots(dm_work, dm_shifting, daymen, times):
@@ -1424,10 +1478,10 @@ def generate_bosun_schedule(times):
         add_block(bosun_work, departure_start, departure_start + 2, bosun_dep)
 
     for sluice_arr_start in times.get('sluice_arr_starts', []):
-        add_block(bosun_work, sluice_arr_start, sluice_arr_start + 4, bosun_sluice)
+        add_block(bosun_work, sluice_arr_start, sluice_arr_start + 5, bosun_sluice)
 
     for sluice_dep_start in times.get('sluice_dep_starts', []):
-        add_block(bosun_work, sluice_dep_start, sluice_dep_start + 4, bosun_sluice)
+        add_block(bosun_work, sluice_dep_start, sluice_dep_start + 5, bosun_sluice)
 
     for shifting_start in times.get('shifting_starts', []):
         add_block(bosun_work, shifting_start, shifting_start + 2, bosun_shifting)
@@ -1527,6 +1581,9 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
     # VAIHE 0: Analysoi jatkuvat yövuorot
     continuous_nights = analyze_continuous_nights(days_data)
     
+    # Pending-slotit edelliseltä päivältä (carry-over keskiyön yli)
+    pending_next_day = {dm: {'work': [], 'sluice': []} for dm in DAYMEN}
+    
     # Generoi päivä kerrallaan
     for day_idx, info in enumerate(days_data):
         # Parsitaan päivän ajat
@@ -1567,6 +1624,18 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
         dm_sluice = {dm: [False] * 48 for dm in DAYMEN}
         dm_shifting = {dm: [False] * 48 for dm in DAYMEN}
         
+        # LISÄÄ PENDING-SLOTIT EDELLISELTÄ PÄIVÄLTÄ (carry-over)
+        for dm in DAYMEN:
+            for slot in pending_next_day[dm]['work']:
+                if 0 <= slot < 48:
+                    dm_work[dm][slot] = True
+            for slot in pending_next_day[dm]['sluice']:
+                if 0 <= slot < 48:
+                    dm_sluice[dm][slot] = True
+        
+        # Nollaa pending seuraavaa päivää varten
+        pending_next_day = {dm: {'work': [], 'sluice': []} for dm in DAYMEN}
+        
         # Aktiiviset daymanit
         active_daymen = [dm for dm in DAYMEN if not is_day_off(dm, day_idx, constraints)]
         
@@ -1576,8 +1645,8 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
         # VAIHE 1: Pakolliset
         apply_arrival_slots(dm_work, dm_arr, active_daymen, day_idx, times, constraints)
         apply_departure_slots(dm_work, dm_dep, active_daymen, day_idx, times, constraints)
-        apply_sluice_arrival_slots(dm_work, dm_sluice, DAYMEN, times)
-        apply_sluice_departure_slots(dm_work, dm_sluice, DAYMEN, times)
+        pending_next_day = apply_sluice_arrival_slots(dm_work, dm_sluice, DAYMEN, times, pending_next_day)
+        pending_next_day = apply_sluice_departure_slots(dm_work, dm_sluice, DAYMEN, times, pending_next_day)
         apply_shifting_slots(dm_work, dm_shifting, DAYMEN, times)
         apply_op_outside_normal_hours(
             dm_work, dm_ops, active_daymen, day_idx, times,
