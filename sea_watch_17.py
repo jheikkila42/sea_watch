@@ -551,13 +551,25 @@ def parse_day_times(info):
             op_start = None
             op_end = None
 
+    # Tulo: syötetty aika on LOPPUMISAIKA, operaatio kestää 1h (2 slottia)
+    # Eli aloitus = syötetty aika - 2 slottia
     arrivals = info.get('arrivals')
     if arrivals:
-        arrival_starts = [time_to_slot(entry['hour'], entry.get('minute', 0)) for entry in arrivals if entry.get('hour') is not None]
+        arrival_starts = []
+        for entry in arrivals:
+            if entry.get('hour') is not None:
+                end_slot = time_to_slot(entry['hour'], entry.get('minute', 0))
+                start_slot = max(0, end_slot - 2)  # 1h = 2 slottia ennen
+                arrival_starts.append(start_slot)
     else:
         arrival_h = info.get('arrival_hour')
         arrival_m = info.get('arrival_minute', 0)
-        arrival_starts = [time_to_slot(arrival_h, arrival_m)] if arrival_h is not None else []
+        if arrival_h is not None:
+            end_slot = time_to_slot(arrival_h, arrival_m)
+            start_slot = max(0, end_slot - 2)  # 1h = 2 slottia ennen
+            arrival_starts = [start_slot]
+        else:
+            arrival_starts = []
 
     departures = info.get('departures')
     if departures:
@@ -567,14 +579,27 @@ def parse_day_times(info):
         departure_m = info.get('departure_minute', 0)
         departure_starts = [time_to_slot(departure_h, departure_m)] if departure_h is not None else []
 
+    # Slussi tulo: syötetty aika on LOPPUMISAIKA, operaatio kestää 2.5h (5 slottia)
+    # Eli aloitus = syötetty aika - 5 slottia
     sluice_arrivals = info.get('sluice_arrivals')
     if sluice_arrivals:
-        sluice_arr_starts = [time_to_slot(entry['hour'], entry.get('minute', 0)) for entry in sluice_arrivals if entry.get('hour') is not None]
+        sluice_arr_starts = []
+        for entry in sluice_arrivals:
+            if entry.get('hour') is not None:
+                end_slot = time_to_slot(entry['hour'], entry.get('minute', 0))
+                start_slot = max(0, end_slot - 5)  # 2.5h = 5 slottia ennen
+                sluice_arr_starts.append(start_slot)
     else:
         sluice_arr_h = info.get('sluice_arrival_hour')
         sluice_arr_m = info.get('sluice_arrival_minute', 0)
-        sluice_arr_starts = [time_to_slot(sluice_arr_h, sluice_arr_m)] if sluice_arr_h is not None else []
+        if sluice_arr_h is not None:
+            end_slot = time_to_slot(sluice_arr_h, sluice_arr_m)
+            start_slot = max(0, end_slot - 5)  # 2.5h = 5 slottia ennen
+            sluice_arr_starts = [start_slot]
+        else:
+            sluice_arr_starts = []
 
+    # Lähtöslussi pysyy ennallaan - syötetty aika on aloitusaika
     sluice_departures = info.get('sluice_departures')
     if sluice_departures:
         sluice_dep_starts = [time_to_slot(entry['hour'], entry.get('minute', 0)) for entry in sluice_departures if entry.get('hour') is not None]
