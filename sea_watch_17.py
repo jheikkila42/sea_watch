@@ -546,7 +546,10 @@ def parse_day_times(info):
                 op_end = NORMAL_END
             port_operations = [(op_start, op_end)]
         else:
-            port_operations = [(NORMAL_START, NORMAL_END)]
+            # Ei operaatioita määritelty -> tyhjä lista
+            port_operations = []
+            op_start = None
+            op_end = None
 
     arrivals = info.get('arrivals')
     if arrivals:
@@ -588,8 +591,13 @@ def parse_day_times(info):
         shifting_m = info.get('shifting_minute', 0)
         shifting_starts = [time_to_slot(shifting_h, shifting_m)] if shifting_h is not None else []
 
-    op_start = min(start for start, _ in port_operations)
-    op_end = max(end for _, end in port_operations)
+    # Laske op_start ja op_end jos operaatioita on
+    if port_operations:
+        op_start = min(start for start, _ in port_operations)
+        op_end = max(end for _, end in port_operations)
+    else:
+        op_start = None
+        op_end = None
 
     return {
         'op_start': op_start,
@@ -1179,28 +1187,50 @@ def fill_gaps_between_blocks(dm_work, dm_ops, active_daymen, day_idx, times, con
 
 def fill_small_gaps(dm_work, dm_ops, active_daymen, times):
     """
-    Vaihe 4: Täytä pienet aukot (max 1h).
-    """
-    op_start = times['op_start']
-    op_end = times['op_end']
+    Vaihe 4: Täytä pienet aukot (max 1h = 2 slottia).
     
+    Käy läpi kaikki aukot työjaksojen välissä ja täyttää ne jos:
+    - Aukko on max 2 slottia (1h)
+    - Aukko ei ole lounastauko
+    - Täyttäminen ei ylitä max tunteja
+    """
     for dm in active_daymen:
         work = dm_work[dm]
-        blocks = get_work_blocks(work)
         
-        for i in range(len(blocks) - 1):
-            _, block1_end = blocks[i]
-            block2_start, _ = blocks[i + 1]
+        # Käy läpi kaikki slotit ja etsi aukot
+        # Aukko = ei-työ slotti jolla on työtä molemmilla puolilla (max 2 slotin päässä)
+        for slot in range(48):
+            if work[slot]:
+                continue  # Jo töissä
             
-            gap = block2_start - block1_end
+            if LUNCH_START <= slot < LUNCH_END:
+                continue  # Lounastauko, älä täytä
             
-            if 0 < gap <= 2:
-                for s in range(block1_end, block2_start):
-                    if LUNCH_START <= s < LUNCH_END:
-                        continue
-                    work[s] = True
-                    if is_op_slot(times, s):
-                        dm_ops[dm][s] = True
+            # Etsi lähin työ vasemmalla ja oikealla
+            left_work = -1
+            for s in range(slot - 1, -1, -1):
+                if work[s]:
+                    left_work = s
+                    break
+            
+            right_work = -1
+            for s in range(slot + 1, 48):
+                if work[s]:
+                    right_work = s
+                    break
+            
+            # Jos työtä molemmilla puolilla ja aukko on pieni (max 2 slottia)
+            if left_work >= 0 and right_work >= 0:
+                gap_size = right_work - left_work - 1
+                
+                # Tarkista ettei lounas ole välissä
+                lunch_in_gap = any(LUNCH_START <= s < LUNCH_END for s in range(left_work + 1, right_work))
+                
+                if gap_size <= 2 and not lunch_in_gap:
+                    # Täytä tämä slotti
+                    work[slot] = True
+                    if is_op_slot(times, slot):
+                        dm_ops[dm][slot] = True
 
 
 def rebalance_dayman_hours(
