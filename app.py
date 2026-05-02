@@ -177,6 +177,17 @@ def first_operation_entry(entries):
     return None, 0
 
 
+def shift_entry_minutes(entry, delta_minutes):
+    """Siirtää yksittäisen aika-entryn minuuteissa (rajataan vuorokauden sisään)."""
+    total = entry["hour"] * 60 + entry.get("minute", 0) + delta_minutes
+    total = max(0, min((24 * 60) - 1, total))
+    return {
+        "hour": total // 60,
+        "minute": total % 60,
+        "as_sluice": entry.get("as_sluice", False),
+    }
+
+
 # ============================================================================
 # PÄIVIEN DATA
 # ============================================================================
@@ -218,7 +229,9 @@ def build_days_data(start_day: int, end_day: int, key_prefix: str):
 
             effective_arrivals = [e for e in arrivals if not e.get("as_sluice")]
             effective_departures = [e for e in departures if not e.get("as_sluice")]
-            sluice_arrivals = [e for e in arrivals if e.get("as_sluice")]
+            sluice_arrivals = [
+                shift_entry_minutes(e, -120) for e in arrivals if e.get("as_sluice")
+            ]
             sluice_departures = [e for e in departures if e.get("as_sluice")]
 
             arr_h, arr_m = first_operation_entry(effective_arrivals)
