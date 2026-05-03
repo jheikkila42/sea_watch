@@ -37,6 +37,7 @@ MAX_HOURS = 10
 WORKERS = ['Bosun', 'Dayman EU', 'Dayman PH1', 'Dayman PH2',
            'Watchman 1', 'Watchman 2', 'Watchman 3']
 DAYMEN = ['Dayman EU', 'Dayman PH1', 'Dayman PH2']
+WATCHMEN = ['Watchman 1', 'Watchman 2', 'Watchman 3']
 
 
 # ============================================================================
@@ -114,6 +115,203 @@ def parse_time_str(time_str):
     h = int(parts[0])
     m = int(parts[1]) if len(parts) > 1 else 0
     return time_to_slot(h, m)
+
+
+# ============================================================================
+# WATCHMAN-FUNKTIOT
+# ============================================================================
+
+# Watchmanien vahtivuorot ja laajennusrajat
+WATCHMAN_SHIFTS = {
+    'Watchman 1': {
+        'shifts': [(0, 8), (24, 32)],      # 00-04, 12-16
+        'early_start': 44,                  # 22:00 (2h ennen 00:00)
+        'late_end': 36                      # 18:00 (2h jälkeen 16:00)
+    },
+    'Watchman 2': {
+        'shifts': [(8, 16), (32, 40)],     # 04-08, 16-20
+        'early_start': 4,                   # 02:00 (2h ennen 04:00)
+        'late_end': 44                      # 22:00 (2h jälkeen 20:00)
+    },
+    'Watchman 3': {
+        'shifts': [(16, 24), (40, 48)],    # 08-12, 20-24
+        'early_start': 12,                  # 06:00 (2h ennen 08:00)
+        'late_end': 52                      # 02:00 seuraavana päivänä (2h jälkeen 00:00)
+    }
+}
+
+
+def is_within_watchman_shift(watchman, slot):
+    """
+    Tarkistaa onko slotti watchmanin normaalin vahtivuoron sisällä.
+    """
+    shifts = WATCHMAN_SHIFTS.get(watchman, {}).get('shifts', [])
+    for start, end in shifts:
+        if start <= slot < end:
+            return True
+    return False
+
+
+def can_watchman_take_slot(watchman, slot, watchman_states):
+    """
+    Tarkistaa voiko watchman ottaa tämän slotin.
+    
+    Watchman voi työskennellä:
+    - Oman vahtivuoronsa aikana (aina OK)
+    - 2h ennen ensimmäistä vahtia TAI 2h jälkeen viimeistä vahtia
+    - Ei molempia samana päivänä
+    
+    Returns:
+        True jos watchman voi ottaa slotin
+    """
+    # Vahtivuoron sisällä - aina OK
+    if is_within_watchman_shift(watchman, slot):
+        return True
+    
+    state = watchman_states.get(watchman, {'extended_start': False, 'extended_end': False})
+    shift_info = WATCHMAN_SHIFTS.get(watchman, {})
+    
+    early_start = shift_info.get('early_start', 0)
+    late_end = shift_info.get('late_end', 48)
+    
+    # Watchman 1: early_start=44 (22:00), ensimmäinen vahti alkaa 0 (00:00)
+    # Slotti on "aikaisessa laajennuksessa" jos se on välillä early_start..ensimmäinen vahti
+    first_shift_start = shift_info.get('shifts', [(0, 0)])[0][0]
+    last_shift_end = shift_info.get('shifts', [(0, 48)])[-1][1]
+    
+    # Aikaisin laajennus (ennen ensimmäistä vahtia)
+    if early_start <= slot < first_shift_start or (early_start > first_shift_start and slot >= early_start):
+        # Watchman 1: slot 44-47 (22:00-00:00) on aikainen laajennus
+        if state['extended_end']:
+            return False  # Jo käytetty myöhäinen laajennus
+        return True
+    
+    # Myöhäinen laajennus (jälkeen viimeisen vahdin)
+    if last_shift_end <= slot < min(late_end, 48):
+        # Esim. Watchman 1: slot 32-35 (16:00-18:00) on myöhäinen laajennus
+        if state['extended_start']:
+            return False  # Jo käytetty aikainen laajennus
+        return True
+    
+    # Watchman 3 erikoistapaus: late_end=52 menee yli keskiyön
+    if late_end > 48 and slot < (late_end - 48):
+        if state['extended_start']:
+            return False
+        return True
+    
+    # Slotin ulkopuolella watchmanin mahdollista työaikaa
+    return False
+
+
+def update_watchman_state(watchman, slot, watchman_states):
+    """
+    Päivittää watchmanin tilan kun hänelle annetaan slotti vahtivuoron ulkopuolella.
+    """
+    if watchman not in watchman_states:
+        watchman_states[watchman] = {'extended_start': False, 'extended_end': False}
+    
+    # Jos slotti on vahtivuoron sisällä, ei päivitetä tilaa
+    if is_within_watchman_shift(watchman, slot):
+        return
+    
+    shift_info = WATCHMAN_SHIFTS.get(watchman, {})
+    early_start = shift_info.get('early_start', 0)
+    first_shift_start = shift_info.get('shifts', [(0, 0)])[0][0]
+    last_shift_end = shift_info.get('shifts', [(0, 48)])[-1][1]
+    late_end = shift_info.get('late_end', 48)
+    
+    # Aikaisin laajennus
+    if early_start <= slot < first_shift_start or (early_start > first_shift_start and slot >= early_start):
+        watchman_states[watchman]['extended_start'] = True
+    # Myöhäinen laajennus
+    elif last_shift_end <= slot < min(late_end, 48):
+        watchman_states[watchman]['extended_end'] = True
+    # Watchman 3 yli keskiyön
+    elif late_end > 48 and slot < (late_end - 48):
+        watchman_states[watchman]['extended_end'] = True
+
+
+def find_available_watchman(slot, watchman_states, wm_work, max_hours=MAX_HOURS):
+    """
+    Etsii watchmanin joka voi ottaa slotin.
+    
+    Returns:
+        Watchmanin nimi tai None
+    """
+    for wm in WATCHMEN:
+        if wm_work[wm][slot]:
+            continue  # Jo töissä tässä slotissa
+        
+        current_hours = sum(wm_work[wm]) / 2
+        if current_hours >= max_hours:
+            continue  # Max tunnit täynnä
+        
+        if can_watchman_take_slot(wm, slot, watchman_states):
+            return wm
+    
+    return None
+
+
+def would_cause_stcw_violation(dm, new_slots, dm_work, prev_day_work, min_longest_rest_hours=6):
+    """
+    Tarkistaa aiheuttaisiko uusien slottien lisääminen STCW-rikkeen.
+    
+    Tarkistaa sekä edellinen->nykyinen että nykyinen->seuraava päivä.
+    Huomioi myös carry-overin (slotit jotka menevät yli keskiyön).
+    
+    Args:
+        dm: Dayman
+        new_slots: Lista sloteista jotka lisättäisiin
+        dm_work: Nykyiset työvuorot (dict tai lista)
+        prev_day_work: Edellisen päivän työvuorot (dict tai lista)
+        
+    Returns:
+        True jos aiheuttaisi rikkeen
+    """
+    # Hae nykyinen työvuoro
+    if isinstance(dm_work, dict):
+        current_work = dm_work[dm][:]
+    else:
+        current_work = dm_work[:]
+    
+    # Laske carry-over slotit (yli keskiyön menevät)
+    carry_over_slots = []
+    for slot in new_slots:
+        if slot >= 48:
+            carry_over_slots.append(slot - 48)
+        elif 0 <= slot < 48:
+            current_work[slot] = True
+    
+    # Hae edellisen päivän työvuoro
+    if isinstance(prev_day_work, dict):
+        prev_work = prev_day_work.get(dm, [False] * 48)
+    else:
+        prev_work = prev_day_work if prev_day_work else [False] * 48
+    
+    # Tarkista edellinen->nykyinen
+    ok1, _, _ = check_stcw_sliding(prev_work, current_work, min_longest_rest_hours)
+    if not ok1:
+        return True
+    
+    # Tarkista nykyinen->seuraava (oletus: normaali 08-16 työpäivä + carry-over)
+    next_day_work = [False] * 48
+    
+    # Lisää carry-over slotit
+    for slot in carry_over_slots:
+        if 0 <= slot < 48:
+            next_day_work[slot] = True
+    
+    # Lisää normaali työpäivä (08-16, lounas pois)
+    for slot in range(NORMAL_START, NORMAL_END):
+        if LUNCH_START <= slot < LUNCH_END:
+            continue
+        next_day_work[slot] = True
+    
+    ok2, _, _ = check_stcw_sliding(current_work, next_day_work, min_longest_rest_hours)
+    if not ok2:
+        return True
+    
+    return False
 
 
 # ============================================================================
@@ -699,81 +897,204 @@ def apply_departure_slots(dm_work, dm_dep, active_daymen, day_idx, times, constr
             add_block(dm_work[dm], departure_start, departure_start + 2, dm_dep[dm])
 
 
-def apply_sluice_arrival_slots(dm_work, dm_sluice, daymen, times, pending_next_day=None):
+def apply_sluice_arrival_slots(dm_work, dm_sluice, daymen, times, pending_next_day=None,
+                                prev_day_work=None, wm_work=None, wm_sluice=None, 
+                                watchman_states=None, min_longest_rest_hours=6):
     """
-    Vaihe 1.3: Slussi tulo - 1. tunti 2 dm, loput 1.5h 3 dm (2.5h kokonaan).
+    Vaihe 1.3: Slussi tulo - 1. tunti 2 henkilöä, loput 1.5h 3 henkilöä (2.5h kokonaan).
+    
+    Käyttää ensisijaisesti daymaneita, mutta jos STCW-rike uhkaa, käyttää watchmaneja.
     
     Args:
         pending_next_day: Dict johon tallennetaan ylivuoto seuraavalle päivälle
+        prev_day_work: Edellisen päivän työvuorot (STCW-tarkistukseen)
+        wm_work: Watchmanien työvuorot
+        wm_sluice: Watchmanien sluice-merkinnät
+        watchman_states: Watchmanien extended_start/end tilat
     
     Returns:
         pending_next_day päivitettynä
     """
     if pending_next_day is None:
         pending_next_day = {dm: {'work': [], 'sluice': []} for dm in daymen}
+    if prev_day_work is None:
+        prev_day_work = {dm: [False] * 48 for dm in daymen}
+    if watchman_states is None:
+        watchman_states = {wm: {'extended_start': False, 'extended_end': False} for wm in WATCHMEN}
     
     for sluice_arr_start in times.get('sluice_arr_starts', []):
+        # Kaikki slussin slotit (myös yli keskiyön menevät) STCW-tarkistusta varten
+        sluice_slots_full = list(range(sluice_arr_start, sluice_arr_start + 5))
+        
+        # Pisteytetään daymanit
         scores = {}
         for dm in daymen:
             hours = sum(dm_work[dm]) / 2
-            scores[dm] = -hours
+            # Tarkista aiheuttaisiko STCW-rikkeen (käytä kaikkia slotteja)
+            would_violate = would_cause_stcw_violation(
+                dm, sluice_slots_full, dm_work, prev_day_work, min_longest_rest_hours
+            )
+            # Rankaistaan niitä jotka aiheuttaisivat rikkeen
+            stcw_penalty = -1000 if would_violate else 0
+            scores[dm] = -hours + stcw_penalty
 
-        first_hour_dm = sorted(daymen, key=lambda x: scores[x], reverse=True)[:2]
+        sorted_daymen = sorted(daymen, key=lambda x: scores[x], reverse=True)
+        
+        # 1. tunti (2 slottia) - valitse 2 henkilöä
+        first_hour_workers = []
+        for dm in sorted_daymen:
+            if len(first_hour_workers) >= 2:
+                break
+            # Tarkista STCW
+            if not would_cause_stcw_violation(dm, [sluice_arr_start, sluice_arr_start + 1], 
+                                               dm_work, prev_day_work, min_longest_rest_hours):
+                first_hour_workers.append(('dayman', dm))
+        
+        # Jos ei tarpeeksi daymaneita, käytä watchmaneja
+        if len(first_hour_workers) < 2 and wm_work is not None:
+            for slot in [sluice_arr_start, sluice_arr_start + 1]:
+                if slot < 48:
+                    wm = find_available_watchman(slot, watchman_states, wm_work)
+                    if wm and ('watchman', wm) not in first_hour_workers:
+                        first_hour_workers.append(('watchman', wm))
+                        if len(first_hour_workers) >= 2:
+                            break
+        
+        # Lisää slotit valituille (1. tunti)
+        for worker_type, worker in first_hour_workers[:2]:
+            if worker_type == 'dayman':
+                overflow = add_block(dm_work[worker], sluice_arr_start, sluice_arr_start + 2, dm_sluice[worker])
+                if overflow > 0:
+                    for i in range(overflow):
+                        pending_next_day[worker]['work'].append(i)
+                        pending_next_day[worker]['sluice'].append(i)
+            else:  # watchman
+                if wm_work is not None and wm_sluice is not None:
+                    add_block(wm_work[worker], sluice_arr_start, sluice_arr_start + 2, wm_sluice[worker])
+                    for slot in [sluice_arr_start, sluice_arr_start + 1]:
+                        if slot < 48:
+                            update_watchman_state(worker, slot, watchman_states)
 
-        # 1. tunti (2 slottia) - 2 daymaniä
-        for dm in first_hour_dm:
-            overflow = add_block(dm_work[dm], sluice_arr_start, sluice_arr_start + 2, dm_sluice[dm])
-            if overflow > 0:
-                for i in range(overflow):
-                    pending_next_day[dm]['work'].append(i)
-                    pending_next_day[dm]['sluice'].append(i)
-
-        # Loput 1.5h (3 slottia) - kaikki 3 daymaniä
-        for dm in daymen:
-            overflow = add_block(dm_work[dm], sluice_arr_start + 2, sluice_arr_start + 5, dm_sluice[dm])
-            if overflow > 0:
-                # Laske mitkä slotit vuotavat yli (sluice_arr_start + 2 + (5-overflow) = ensimmäinen ylivuoto)
-                first_overflow_slot = sluice_arr_start + 5 - overflow
-                for i in range(overflow):
-                    next_day_slot = (first_overflow_slot + i) - 48
-                    if next_day_slot not in pending_next_day[dm]['work']:
-                        pending_next_day[dm]['work'].append(next_day_slot)
-                        pending_next_day[dm]['sluice'].append(next_day_slot)
+        # Loput 1.5h (3 slottia) - valitse 3 henkilöä
+        second_part_workers = []
+        for dm in sorted_daymen:
+            if len(second_part_workers) >= 3:
+                break
+            # Käytä kaikkia slotteja (myös yli keskiyön) STCW-tarkistuksessa
+            slots_2nd_full = list(range(sluice_arr_start + 2, sluice_arr_start + 5))
+            if not would_cause_stcw_violation(dm, slots_2nd_full, dm_work, prev_day_work, min_longest_rest_hours):
+                second_part_workers.append(('dayman', dm))
+        
+        # Jos ei tarpeeksi daymaneita, käytä watchmaneja
+        if len(second_part_workers) < 3 and wm_work is not None:
+            for slot in range(sluice_arr_start + 2, min(sluice_arr_start + 5, 48)):
+                wm = find_available_watchman(slot, watchman_states, wm_work)
+                if wm and ('watchman', wm) not in second_part_workers:
+                    second_part_workers.append(('watchman', wm))
+                    if len(second_part_workers) >= 3:
+                        break
+        
+        # Lisää slotit valituille (loput 1.5h)
+        for worker_type, worker in second_part_workers[:3]:
+            if worker_type == 'dayman':
+                overflow = add_block(dm_work[worker], sluice_arr_start + 2, sluice_arr_start + 5, dm_sluice[worker])
+                if overflow > 0:
+                    first_overflow_slot = sluice_arr_start + 5 - overflow
+                    for i in range(overflow):
+                        next_day_slot = (first_overflow_slot + i) - 48
+                        if next_day_slot not in pending_next_day[worker]['work']:
+                            pending_next_day[worker]['work'].append(next_day_slot)
+                            pending_next_day[worker]['sluice'].append(next_day_slot)
+            else:  # watchman
+                if wm_work is not None and wm_sluice is not None:
+                    add_block(wm_work[worker], sluice_arr_start + 2, sluice_arr_start + 5, wm_sluice[worker])
+                    for slot in range(sluice_arr_start + 2, min(sluice_arr_start + 5, 48)):
+                        update_watchman_state(worker, slot, watchman_states)
     
     return pending_next_day
 
 
-def apply_sluice_departure_slots(dm_work, dm_sluice, daymen, times, pending_next_day=None):
+def apply_sluice_departure_slots(dm_work, dm_sluice, daymen, times, pending_next_day=None,
+                                  prev_day_work=None, wm_work=None, wm_sluice=None,
+                                  watchman_states=None, min_longest_rest_hours=6):
     """
-    Vaihe 1.4: Slussi lähtö - 2 daymaniä (2.5h).
+    Vaihe 1.4: Slussi lähtö - 2 henkilöä (2.5h).
+    
+    Käyttää ensisijaisesti daymaneita, mutta jos STCW-rike uhkaa, käyttää watchmaneja.
     
     Args:
         pending_next_day: Dict johon tallennetaan ylivuoto seuraavalle päivälle
+        prev_day_work: Edellisen päivän työvuorot (STCW-tarkistukseen)
+        wm_work: Watchmanien työvuorot
+        wm_sluice: Watchmanien sluice-merkinnät
+        watchman_states: Watchmanien extended_start/end tilat
     
     Returns:
         pending_next_day päivitettynä
     """
     if pending_next_day is None:
         pending_next_day = {dm: {'work': [], 'sluice': []} for dm in daymen}
+    if prev_day_work is None:
+        prev_day_work = {dm: [False] * 48 for dm in daymen}
+    if watchman_states is None:
+        watchman_states = {wm: {'extended_start': False, 'extended_end': False} for wm in WATCHMEN}
     
     for sluice_dep_start in times.get('sluice_dep_starts', []):
+        # Kaikki slussin slotit (myös yli keskiyön menevät) STCW-tarkistusta varten
+        sluice_slots_full = list(range(sluice_dep_start, sluice_dep_start + 5))
+        
+        # Pisteytetään daymanit
         scores = {}
         for dm in daymen:
             hours = sum(dm_work[dm]) / 2
             continuity = 1 if (sluice_dep_start > 0 and dm_work[dm][sluice_dep_start - 1]) else 0
-            scores[dm] = -hours + continuity
+            
+            # Tarkista onko jo osallistunut slussiin tänään (rankaistaan)
+            already_in_sluice = any(dm_sluice[dm])
+            sluice_penalty = -500 if already_in_sluice else 0
+            
+            # Tarkista aiheuttaisiko STCW-rikkeen (käytä kaikkia slotteja)
+            would_violate = would_cause_stcw_violation(
+                dm, sluice_slots_full, dm_work, prev_day_work, min_longest_rest_hours
+            )
+            stcw_penalty = -1000 if would_violate else 0
+            scores[dm] = -hours + continuity + stcw_penalty + sluice_penalty
 
-        selected = sorted(daymen, key=lambda x: scores[x], reverse=True)[:2]
-        for dm in selected:
-            # 2.5h = 5 slottia
-            overflow = add_block(dm_work[dm], sluice_dep_start, sluice_dep_start + 5, dm_sluice[dm])
-            if overflow > 0:
-                first_overflow_slot = sluice_dep_start + 5 - overflow
-                for i in range(overflow):
-                    next_day_slot = (first_overflow_slot + i) - 48
-                    if next_day_slot not in pending_next_day[dm]['work']:
-                        pending_next_day[dm]['work'].append(next_day_slot)
-                        pending_next_day[dm]['sluice'].append(next_day_slot)
+        sorted_daymen = sorted(daymen, key=lambda x: scores[x], reverse=True)
+        
+        # Valitse 2 henkilöä
+        selected_workers = []
+        for dm in sorted_daymen:
+            if len(selected_workers) >= 2:
+                break
+            if not would_cause_stcw_violation(dm, sluice_slots_full, dm_work, prev_day_work, min_longest_rest_hours):
+                selected_workers.append(('dayman', dm))
+        
+        # Jos ei tarpeeksi daymaneita, käytä watchmaneja
+        if len(selected_workers) < 2 and wm_work is not None:
+            for slot in range(sluice_dep_start, min(sluice_dep_start + 5, 48)):
+                wm = find_available_watchman(slot, watchman_states, wm_work)
+                if wm and ('watchman', wm) not in selected_workers:
+                    selected_workers.append(('watchman', wm))
+                    if len(selected_workers) >= 2:
+                        break
+        
+        # Lisää slotit valituille
+        for worker_type, worker in selected_workers[:2]:
+            if worker_type == 'dayman':
+                overflow = add_block(dm_work[worker], sluice_dep_start, sluice_dep_start + 5, dm_sluice[worker])
+                if overflow > 0:
+                    first_overflow_slot = sluice_dep_start + 5 - overflow
+                    for i in range(overflow):
+                        next_day_slot = (first_overflow_slot + i) - 48
+                        if next_day_slot not in pending_next_day[worker]['work']:
+                            pending_next_day[worker]['work'].append(next_day_slot)
+                            pending_next_day[worker]['sluice'].append(next_day_slot)
+            else:  # watchman
+                if wm_work is not None and wm_sluice is not None:
+                    add_block(wm_work[worker], sluice_dep_start, sluice_dep_start + 5, wm_sluice[worker])
+                    for slot in range(sluice_dep_start, min(sluice_dep_start + 5, 48)):
+                        update_watchman_state(worker, slot, watchman_states)
     
     return pending_next_day
 
@@ -1390,6 +1711,9 @@ def fix_stcw_violations(
     constraints,
     prev_day_work,
     min_longest_rest_hours=6,
+    wm_work=None,
+    wm_sluice=None,
+    watchman_states=None,
 ):
     """
     VAIHE 6: Korjaa STCW-rikkeet jälkikäteen.
@@ -1397,9 +1721,17 @@ def fix_stcw_violations(
     Jos työntekijällä on STCW-rike (alle 10h lepoa tai alle 6h pisin lepo
     jossain 24h ikkunassa), yritetään siirtää slotteja toiselle työntekijälle.
     
-    Priorisoi aamuslottien siirtämistä (08:00 alkaen) koska iltavuoro edelliseltä
-    päivältä + aamuvuoro on yleisin rikkeen syy.
+    Priorisoi:
+    1. Slussi-slottien siirto watchmanille (jos mahdollista)
+    2. Aamuslottien siirto toiselle daymanille
     """
+    if wm_work is None:
+        wm_work = {wm: [False] * 48 for wm in WATCHMEN}
+    if wm_sluice is None:
+        wm_sluice = {wm: [False] * 48 for wm in WATCHMEN}
+    if watchman_states is None:
+        watchman_states = {wm: {'extended_start': False, 'extended_end': False} for wm in WATCHMEN}
+    
     max_iterations = 100
     
     for iteration in range(max_iterations):
@@ -1416,12 +1748,49 @@ def fix_stcw_violations(
                 continue
             
             violation_found = True
-            
-            # Etsitään siirrettäviä slotteja - priorisoi aamuslotit
-            # koska iltavuoro + aamuvuoro aiheuttaa yleensä rikkeen
             moved = False
             
-            # Käy läpi aamuslotit ensin (08:00-12:00), sitten muut
+            # VAIHE 1: Yritä siirtää slussi-slotteja watchmanille
+            sluice_slots = [s for s in range(48) if dm_sluice[dm][s]]
+            
+            for slot in sluice_slots:
+                # Etsi watchman joka voi ottaa slotin
+                wm = find_available_watchman(slot, watchman_states, wm_work)
+                
+                if wm is None:
+                    continue
+                
+                # Testaa siirto
+                dm_test = dm_work[dm][:]
+                dm_test[slot] = False
+                
+                dm_ok_after, _, new_analysis = check_stcw_sliding(
+                    prev_day_work.get(dm, [False] * 48),
+                    dm_test,
+                    min_longest_rest_hours
+                )
+                
+                # Jos tilanne ei parane, ohita
+                if not dm_ok_after:
+                    old_rest = analysis['longest_rest']
+                    new_rest = new_analysis['longest_rest'] if new_analysis else 0
+                    if new_rest <= old_rest:
+                        continue
+                
+                # Tee siirto
+                dm_work[dm][slot] = False
+                dm_sluice[dm][slot] = False
+                wm_work[wm][slot] = True
+                wm_sluice[wm][slot] = True
+                update_watchman_state(wm, slot, watchman_states)
+                
+                moved = True
+                break
+            
+            if moved:
+                break  # Aloita uusi iteraatio alusta
+            
+            # VAIHE 2: Yritä siirtää normaaleja slotteja toiselle daymanille
             morning_slots = list(range(NORMAL_START, LUNCH_START))  # 08:00-11:30
             other_slots = list(range(LUNCH_END, NORMAL_END))  # 12:00-17:00
             
@@ -1556,16 +1925,27 @@ def generate_bosun_schedule(times):
     }
 
 
-def generate_watchman_schedule(worker):
+def generate_watchman_schedule(worker, wm_work=None, wm_sluice=None):
     """
     Generoi watchmanin 4-on / 8-off -vuoron (8h/vrk).
+    Yhdistää mahdolliset slussi-vuorot vakiovuoroihin.
 
     Watchman 1: 00-04, 12-16
     Watchman 2: 04-08, 16-20
     Watchman 3: 08-12, 20-24
     """
-    work_slots = [False] * 48
+    # Jos slussi-vuoroja on annettu, käytä niitä pohjana
+    if wm_work is not None and worker in wm_work:
+        work_slots = wm_work[worker][:]
+    else:
+        work_slots = [False] * 48
+    
+    if wm_sluice is not None and worker in wm_sluice:
+        sluice_slots = wm_sluice[worker][:]
+    else:
+        sluice_slots = [False] * 48
 
+    # Lisää vakiovuorot
     watch_blocks = {
         'Watchman 1': [(0, 8), (24, 32)],
         'Watchman 2': [(8, 16), (32, 40)],
@@ -1580,7 +1960,7 @@ def generate_watchman_schedule(worker):
         'arrival_slots': [False] * 48,
         'departure_slots': [False] * 48,
         'port_op_slots': [False] * 48,
-        'sluice_slots': [False] * 48,
+        'sluice_slots': sluice_slots,
         'shifting_slots': [False] * 48
     }
 
@@ -1679,6 +2059,11 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
         dm_sluice = {dm: [False] * 48 for dm in DAYMEN}
         dm_shifting = {dm: [False] * 48 for dm in DAYMEN}
         
+        # Alusta watchman-tietorakenteet
+        wm_work = {wm: [False] * 48 for wm in WATCHMEN}
+        wm_sluice = {wm: [False] * 48 for wm in WATCHMEN}
+        watchman_states = {wm: {'extended_start': False, 'extended_end': False} for wm in WATCHMEN}
+        
         # LISÄÄ PENDING-SLOTIT EDELLISELTÄ PÄIVÄLTÄ (carry-over)
         for dm in DAYMEN:
             for slot in pending_next_day[dm]['work']:
@@ -1700,8 +2085,16 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
         # VAIHE 1: Pakolliset
         apply_arrival_slots(dm_work, dm_arr, active_daymen, day_idx, times, constraints)
         apply_departure_slots(dm_work, dm_dep, active_daymen, day_idx, times, constraints)
-        pending_next_day = apply_sluice_arrival_slots(dm_work, dm_sluice, DAYMEN, times, pending_next_day)
-        pending_next_day = apply_sluice_departure_slots(dm_work, dm_sluice, DAYMEN, times, pending_next_day)
+        pending_next_day = apply_sluice_arrival_slots(
+            dm_work, dm_sluice, DAYMEN, times, pending_next_day,
+            prev_day_work=prev_day_work, wm_work=wm_work, wm_sluice=wm_sluice,
+            watchman_states=watchman_states, min_longest_rest_hours=min_longest_rest_hours
+        )
+        pending_next_day = apply_sluice_departure_slots(
+            dm_work, dm_sluice, DAYMEN, times, pending_next_day,
+            prev_day_work=prev_day_work, wm_work=wm_work, wm_sluice=wm_sluice,
+            watchman_states=watchman_states, min_longest_rest_hours=min_longest_rest_hours
+        )
         apply_shifting_slots(dm_work, dm_shifting, DAYMEN, times)
         apply_op_outside_normal_hours(
             dm_work, dm_ops, active_daymen, day_idx, times,
@@ -1734,7 +2127,8 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
         fix_stcw_violations(
             dm_work, dm_ops, dm_arr, dm_dep, dm_sluice, dm_shifting,
             active_daymen, day_idx, times, constraints, prev_day_work,
-            min_longest_rest_hours=min_longest_rest_hours
+            min_longest_rest_hours=min_longest_rest_hours,
+            wm_work=wm_work, wm_sluice=wm_sluice, watchman_states=watchman_states
         )
         
         # Tallenna daymanien tulokset
@@ -1751,9 +2145,9 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
         # Bosun
         all_days['Bosun'].append(generate_bosun_schedule(times))
         
-        # Watchmanit
-        for w in ['Watchman 1', 'Watchman 2', 'Watchman 3']:
-            all_days[w].append(generate_watchman_schedule(w))
+        # Watchmanit (yhdistää slussi-vuorot vakiovuoroihin)
+        for wm in WATCHMEN:
+            all_days[wm].append(generate_watchman_schedule(wm, wm_work, wm_sluice))
     
     # Rakenna Excel
     wb, report = build_workbook_and_report(all_days, num_days, WORKERS)
