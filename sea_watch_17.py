@@ -967,6 +967,25 @@ def apply_sluice_arrival_slots(dm_work, dm_sluice, daymen, times, pending_next_d
         prev_day_work = {dm: [False] * 48 for dm in daymen}
     if watchman_states is None:
         watchman_states = {wm: {'extended_start': False, 'extended_end': False} for wm in WATCHMEN}
+
+    def trim_dayman_overlap(slot_start, slot_end, required_workers):
+        """Poista turha dayman-slussi päällekkäisyys watchmanin kanssa."""
+        if wm_sluice is None:
+            return
+        for slot in range(slot_start, min(slot_end, 48)):
+            wm_in_slot = any(wm_sluice[wm][slot] for wm in WATCHMEN)
+            if not wm_in_slot:
+                continue
+
+            while True:
+                daymen_in_slot = [dm for dm in daymen if dm_sluice[dm][slot] and dm_work[dm][slot]]
+                if len(daymen_in_slot) + 1 <= required_workers:
+                    break
+
+                # Poista ensin eniten tunteja tehneeltä daymanilta
+                donor = max(daymen_in_slot, key=lambda dm: sum(dm_work[dm]) / 2)
+                dm_work[donor][slot] = False
+                dm_sluice[donor][slot] = False
     
     for sluice_arr_start in times.get('sluice_arr_starts', []):
         # Kaikki slussin slotit (myös yli keskiyön menevät) STCW-tarkistusta varten
@@ -1056,6 +1075,10 @@ def apply_sluice_arrival_slots(dm_work, dm_sluice, daymen, times, pending_next_d
                     add_block(wm_work[worker], sluice_arr_start + 2, sluice_arr_start + 5, wm_sluice[worker])
                     for slot in range(sluice_arr_start + 2, min(sluice_arr_start + 5, 48)):
                         update_watchman_state(worker, slot, watchman_states)
+
+        # Leikkaa turhat päällekkäisyydet: 1. tunti vaatii 2 hlö, loput 1.5h vaatii 3 hlö
+        trim_dayman_overlap(sluice_arr_start, sluice_arr_start + 2, required_workers=2)
+        trim_dayman_overlap(sluice_arr_start + 2, sluice_arr_start + 5, required_workers=3)
     
     return pending_next_day
 
@@ -1084,6 +1107,24 @@ def apply_sluice_departure_slots(dm_work, dm_sluice, daymen, times, pending_next
         prev_day_work = {dm: [False] * 48 for dm in daymen}
     if watchman_states is None:
         watchman_states = {wm: {'extended_start': False, 'extended_end': False} for wm in WATCHMEN}
+
+    def trim_dayman_overlap(slot_start, slot_end, required_workers):
+        """Poista turha dayman-slussi päällekkäisyys watchmanin kanssa."""
+        if wm_sluice is None:
+            return
+        for slot in range(slot_start, min(slot_end, 48)):
+            wm_in_slot = any(wm_sluice[wm][slot] for wm in WATCHMEN)
+            if not wm_in_slot:
+                continue
+
+            while True:
+                daymen_in_slot = [dm for dm in daymen if dm_sluice[dm][slot] and dm_work[dm][slot]]
+                if len(daymen_in_slot) + 1 <= required_workers:
+                    break
+
+                donor = max(daymen_in_slot, key=lambda dm: sum(dm_work[dm]) / 2)
+                dm_work[donor][slot] = False
+                dm_sluice[donor][slot] = False
     
     for sluice_dep_start in times.get('sluice_dep_starts', []):
         # Kaikki slussin slotit (myös yli keskiyön menevät) STCW-tarkistusta varten
@@ -1141,6 +1182,9 @@ def apply_sluice_departure_slots(dm_work, dm_sluice, daymen, times, pending_next
                     add_block(wm_work[worker], sluice_dep_start, sluice_dep_start + 5, wm_sluice[worker])
                     for slot in range(sluice_dep_start, min(sluice_dep_start + 5, 48)):
                         update_watchman_state(worker, slot, watchman_states)
+
+            # Lähtöslussi 2.5h: vaaditaan 3 hlö koko blokissa
+            trim_dayman_overlap(sluice_dep_start, sluice_dep_start + 5, required_workers=3)
     
     return pending_next_day
 
@@ -2252,9 +2296,6 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
             target_hours=8.5,
             soft_upper_hours=9.5
         )
-        
-        # VAIHE 8: Täytä watchmanien aukot vuoron ja lisätyön välissä
-        align_watchman_extra_work(wm_work, wm_sluice)
         
         # Tallenna daymanien tulokset
         for dm in DAYMEN:
