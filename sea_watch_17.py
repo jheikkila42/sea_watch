@@ -152,6 +152,52 @@ def is_within_watchman_shift(watchman, slot):
     return False
 
 
+def align_watchman_extra_work(wm_work, wm_sluice):
+    """
+    Täyttää aukot watchmanin vahtivuoron ja lisätyön välissä.
+    
+    Jos watchman tekee työtä vahtivuoronsa ulkopuolella ja välissä on aukko,
+    täytetään aukko niin että työ jatkuu ilman taukoa.
+    
+    Esim: Watchman 1 vuoro 12-16, slussi 17-18 -> täytetään 16-17
+    """
+    for wm in WATCHMEN:
+        work = wm_work[wm]
+        shifts = WATCHMAN_SHIFTS.get(wm, {}).get('shifts', [])
+        
+        for shift_start, shift_end in shifts:
+            # Tarkista onko työtä JÄLKEEN vuoron (late extension)
+            # Etsi ensimmäinen työslotti vuoron jälkeen
+            first_extra_after = None
+            for s in range(shift_end, min(shift_end + 4, 48)):  # Max 2h päässä
+                if work[s]:
+                    first_extra_after = s
+                    break
+            
+            # Jos löytyi ja välissä on aukko, täytä se
+            if first_extra_after is not None and first_extra_after > shift_end:
+                for s in range(shift_end, first_extra_after):
+                    work[s] = True
+                    # Jos alkuperäinen työ oli slussia, merkitään myös täyttö slussiksi
+                    if wm_sluice[wm][first_extra_after]:
+                        wm_sluice[wm][s] = True
+            
+            # Tarkista onko työtä ENNEN vuoroa (early extension)
+            # Etsi viimeinen työslotti ennen vuoroa
+            last_extra_before = None
+            for s in range(shift_start - 1, max(shift_start - 5, -1), -1):  # Max 2h päässä
+                if work[s]:
+                    last_extra_before = s
+                    break
+            
+            # Jos löytyi ja välissä on aukko, täytä se
+            if last_extra_before is not None and last_extra_before < shift_start - 1:
+                for s in range(last_extra_before + 1, shift_start):
+                    work[s] = True
+                    if wm_sluice[wm][last_extra_before]:
+                        wm_sluice[wm][s] = True
+
+
 def can_watchman_take_slot(watchman, slot, watchman_states):
     """
     Tarkistaa voiko watchman ottaa tämän slotin.
@@ -1531,8 +1577,7 @@ def fill_gaps_between_blocks(dm_work, dm_ops, active_daymen, day_idx, times, con
 # VAIHE 4: AUKKOJEN TÄYTTÖ
 # ============================================================================
 
-def fill_small_gaps(dm_work, dm_ops, active_daymen, times, day_idx=0, constraints=None,
-                    prev_day_work=None, min_longest_rest_hours=6, target_hours=8.5):
+def fill_small_gaps(dm_work, dm_ops, active_daymen, times):
     """
     Täytä pienet aukot (max 2h = 4 slottia).
     
@@ -1540,15 +1585,8 @@ def fill_small_gaps(dm_work, dm_ops, active_daymen, times, day_idx=0, constraint
     - Aukko on max 4 slottia (2h), EI lasketa lounasta mukaan
     - Lounaslotteja ei täytetä
     """
-    if constraints is None:
-        constraints = []
-    if prev_day_work is None:
-        prev_day_work = {dm: [False] * 48 for dm in active_daymen}
-
     for dm in active_daymen:
         work = dm_work[dm]
-        max_h = get_max_hours(dm, constraints)
-        current_hours = sum(work) / 2
         
         # Käy läpi kaikki slotit ja etsi aukot
         for slot in range(48):
@@ -1584,26 +1622,8 @@ def fill_small_gaps(dm_work, dm_ops, active_daymen, times, day_idx=0, constraint
                 gap_size = len(gap_slots)
                 
                 if gap_size <= 4 and slot in gap_slots:
-                    # Pidä täyttö kohtuullisena tavoitetuntien ympärillä
-                    if current_hours >= max_h:
-                        continue
-                    if current_hours >= target_hours + 0.5:
-                        continue
-                    if not can_work_slot(dm, slot, day_idx, constraints, current_hours):
-                        continue
-
-                    test_work = work[:]
-                    test_work[slot] = True
-                    if not check_stcw_ok(
-                        test_work,
-                        prev_day_work.get(dm, [False] * 48),
-                        min_longest_rest_hours=min_longest_rest_hours,
-                    ):
-                        continue
-
                     # Täytä tämä slotti
                     work[slot] = True
-                    current_hours = sum(work) / 2
                     if is_op_slot(times, slot):
                         dm_ops[dm][slot] = True
 
@@ -2204,19 +2224,10 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
         )
         
         # VAIHE 7: Täytä pienet aukot (max 2h) - kutsutaan lopuksi kun kaikki muu on valmis
-        fill_small_gaps(
-            dm_work, dm_ops, active_daymen, times, day_idx=day_idx, constraints=constraints,
-            prev_day_work=prev_day_work, min_longest_rest_hours=min_longest_rest_hours,
-            target_hours=8.5
-        )
-
-        # VAIHE 7.5: Lopullinen tuntitasoitus pienten aukkojen täytön jälkeen
-        rebalance_dayman_hours(
-            dm_work, dm_ops, dm_arr, dm_dep, dm_sluice, dm_shifting,
-            active_daymen, day_idx, times, constraints, prev_day_work,
-            min_longest_rest_hours=min_longest_rest_hours,
-            max_diff_hours=0.5
-        )
+        fill_small_gaps(dm_work, dm_ops, active_daymen, times)
+        
+        # VAIHE 8: Täytä watchmanien aukot vuoron ja lisätyön välissä
+        align_watchman_extra_work(wm_work, wm_sluice)
         
         # Tallenna daymanien tulokset
         for dm in DAYMEN:
