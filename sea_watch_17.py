@@ -1531,8 +1531,8 @@ def fill_gaps_between_blocks(dm_work, dm_ops, active_daymen, day_idx, times, con
 # VAIHE 4: AUKKOJEN TÄYTTÖ
 # ============================================================================
 
-def fill_small_gaps(dm_work, dm_ops, active_daymen, day_idx, times, constraints,
-                    prev_day_work, min_longest_rest_hours=6, target_hours=8.5):
+def fill_small_gaps(dm_work, dm_ops, active_daymen, times, day_idx=0, constraints=None,
+                    prev_day_work=None, min_longest_rest_hours=6, target_hours=8.5):
     """
     Täytä pienet aukot (max 2h = 4 slottia).
     
@@ -1540,6 +1540,11 @@ def fill_small_gaps(dm_work, dm_ops, active_daymen, day_idx, times, constraints,
     - Aukko on max 4 slottia (2h), EI lasketa lounasta mukaan
     - Lounaslotteja ei täytetä
     """
+    if constraints is None:
+        constraints = []
+    if prev_day_work is None:
+        prev_day_work = {dm: [False] * 48 for dm in active_daymen}
+
     for dm in active_daymen:
         work = dm_work[dm]
         max_h = get_max_hours(dm, constraints)
@@ -2200,7 +2205,7 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
         
         # VAIHE 7: Täytä pienet aukot (max 2h) - kutsutaan lopuksi kun kaikki muu on valmis
         fill_small_gaps(
-            dm_work, dm_ops, active_daymen, day_idx, times, constraints,
+            dm_work, dm_ops, active_daymen, times, day_idx=day_idx, constraints=constraints,
             prev_day_work=prev_day_work, min_longest_rest_hours=min_longest_rest_hours,
             target_hours=8.5
         )
