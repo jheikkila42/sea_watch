@@ -921,6 +921,25 @@ def apply_sluice_arrival_slots(dm_work, dm_sluice, daymen, times, pending_next_d
         prev_day_work = {dm: [False] * 48 for dm in daymen}
     if watchman_states is None:
         watchman_states = {wm: {'extended_start': False, 'extended_end': False} for wm in WATCHMEN}
+
+    def trim_dayman_overlap(slot_start, slot_end, required_workers):
+        """Poista turha dayman-slussi päällekkäisyys watchmanin kanssa."""
+        if wm_sluice is None:
+            return
+        for slot in range(slot_start, min(slot_end, 48)):
+            wm_in_slot = any(wm_sluice[wm][slot] for wm in WATCHMEN)
+            if not wm_in_slot:
+                continue
+
+            while True:
+                daymen_in_slot = [dm for dm in daymen if dm_sluice[dm][slot] and dm_work[dm][slot]]
+                if len(daymen_in_slot) + 1 <= required_workers:
+                    break
+
+                # Poista ensin eniten tunteja tehneeltä daymanilta
+                donor = max(daymen_in_slot, key=lambda dm: sum(dm_work[dm]) / 2)
+                dm_work[donor][slot] = False
+                dm_sluice[donor][slot] = False
     
     for sluice_arr_start in times.get('sluice_arr_starts', []):
         # Kaikki slussin slotit (myös yli keskiyön menevät) STCW-tarkistusta varten
@@ -1010,6 +1029,10 @@ def apply_sluice_arrival_slots(dm_work, dm_sluice, daymen, times, pending_next_d
                     add_block(wm_work[worker], sluice_arr_start + 2, sluice_arr_start + 5, wm_sluice[worker])
                     for slot in range(sluice_arr_start + 2, min(sluice_arr_start + 5, 48)):
                         update_watchman_state(worker, slot, watchman_states)
+
+        # Leikkaa turhat päällekkäisyydet: 1. tunti vaatii 2 hlö, loput 1.5h vaatii 3 hlö
+        trim_dayman_overlap(sluice_arr_start, sluice_arr_start + 2, required_workers=2)
+        trim_dayman_overlap(sluice_arr_start + 2, sluice_arr_start + 5, required_workers=3)
     
     return pending_next_day
 
@@ -1038,6 +1061,24 @@ def apply_sluice_departure_slots(dm_work, dm_sluice, daymen, times, pending_next
         prev_day_work = {dm: [False] * 48 for dm in daymen}
     if watchman_states is None:
         watchman_states = {wm: {'extended_start': False, 'extended_end': False} for wm in WATCHMEN}
+
+    def trim_dayman_overlap(slot_start, slot_end, required_workers):
+        """Poista turha dayman-slussi päällekkäisyys watchmanin kanssa."""
+        if wm_sluice is None:
+            return
+        for slot in range(slot_start, min(slot_end, 48)):
+            wm_in_slot = any(wm_sluice[wm][slot] for wm in WATCHMEN)
+            if not wm_in_slot:
+                continue
+
+            while True:
+                daymen_in_slot = [dm for dm in daymen if dm_sluice[dm][slot] and dm_work[dm][slot]]
+                if len(daymen_in_slot) + 1 <= required_workers:
+                    break
+
+                donor = max(daymen_in_slot, key=lambda dm: sum(dm_work[dm]) / 2)
+                dm_work[donor][slot] = False
+                dm_sluice[donor][slot] = False
     
     for sluice_dep_start in times.get('sluice_dep_starts', []):
         # Kaikki slussin slotit (myös yli keskiyön menevät) STCW-tarkistusta varten
@@ -1095,6 +1136,9 @@ def apply_sluice_departure_slots(dm_work, dm_sluice, daymen, times, pending_next
                     add_block(wm_work[worker], sluice_dep_start, sluice_dep_start + 5, wm_sluice[worker])
                     for slot in range(sluice_dep_start, min(sluice_dep_start + 5, 48)):
                         update_watchman_state(worker, slot, watchman_states)
+
+            # Lähtöslussi 2.5h: vaaditaan 3 hlö koko blokissa
+            trim_dayman_overlap(sluice_dep_start, sluice_dep_start + 5, required_workers=3)
     
     return pending_next_day
 
@@ -1596,6 +1640,8 @@ def rebalance_dayman_hours(
     prev_day_work,
     min_longest_rest_hours=6,
     max_diff_hours=1.0,
+    target_hours=8.5,
+    soft_upper_hours=9.5,
 ):
     """
     Tasapainottaa daymanien tuntieroja siirtämällä 30 min slotteja.
@@ -1616,6 +1662,8 @@ def rebalance_dayman_hours(
             break
 
         moved = False
+        best_move = None
+        best_score = None
 
         for slot in range(NORMAL_START, NORMAL_END):
             if LUNCH_START <= slot < LUNCH_END:
@@ -1640,6 +1688,8 @@ def rebalance_dayman_hours(
             receiver_hours = hours[receiver]
             receiver_max = get_max_hours(receiver, constraints)
             if receiver_hours >= receiver_max:
+                continue
+            if receiver_hours >= soft_upper_hours:
                 continue
             if not can_work_slot(receiver, slot, day_idx, constraints, receiver_hours):
                 continue
@@ -1671,31 +1721,42 @@ def rebalance_dayman_hours(
             ):
                 continue
 
-            # Tee siirto
+            donor_after = donor_hours_after
+            receiver_after = receiver_hours + 0.5
+            new_diff = donor_after - receiver_after
+            score = (
+                abs(hours[donor] - target_hours) + abs(hours[receiver] - target_hours)
+            ) - (
+                abs(donor_after - target_hours) + abs(receiver_after - target_hours)
+            )
+            score += (diff - new_diff) * 2
+
+            if best_score is None or score > best_score:
+                best_score = score
+                best_move = (slot, is_op, donor_is_only_op)
+
+        if best_move is not None:
+            slot, is_op, donor_is_only_op = best_move
+
             dm_work[donor][slot] = False
             dm_work[receiver][slot] = True
 
             if is_op:
                 dm_ops[receiver][slot] = True
-                # donorin op-merkintä pois, jos donor ei enää työskentele slotissa
                 dm_ops[donor][slot] = False
             elif dm_ops[donor][slot] and not dm_work[donor][slot]:
                 dm_ops[donor][slot] = False
 
-            # Varmista, että op-slotilla on edelleen vähintään yksi tekijä
             if donor_is_only_op and not any(
                 dm_work[dm][slot] and dm_ops[dm][slot] for dm in active_daymen
             ):
-                # rollback
                 dm_work[donor][slot] = True
                 dm_work[receiver][slot] = False
                 dm_ops[donor][slot] = True
                 if not dm_work[receiver][slot]:
                     dm_ops[receiver][slot] = False
-                continue
-
-            moved = True
-            break
+            else:
+                moved = True
 
         if not moved:
             break
@@ -2179,6 +2240,16 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
         
         # VAIHE 7: Täytä pienet aukot (max 2h) - kutsutaan lopuksi kun kaikki muu on valmis
         fill_small_gaps(dm_work, dm_ops, active_daymen, times)
+
+        # Lopullinen tasapainotus myöhäisten korjausten jälkeen
+        rebalance_dayman_hours(
+            dm_work, dm_ops, dm_arr, dm_dep, dm_sluice, dm_shifting,
+            active_daymen, day_idx, times, constraints, prev_day_work,
+            min_longest_rest_hours=min_longest_rest_hours,
+            max_diff_hours=0.5,
+            target_hours=8.5,
+            soft_upper_hours=9.5
+        )
         
         # Tallenna daymanien tulokset
         for dm in DAYMEN:
