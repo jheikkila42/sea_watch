@@ -1533,18 +1533,16 @@ def fill_gaps_between_blocks(dm_work, dm_ops, active_daymen, day_idx, times, con
 
 def fill_small_gaps(dm_work, dm_ops, active_daymen, times):
     """
-    Vaihe 4: Täytä pienet aukot (max 1h = 2 slottia).
+    Täytä pienet aukot (max 2h = 4 slottia).
     
     Käy läpi kaikki aukot työjaksojen välissä ja täyttää ne jos:
-    - Aukko on max 2 slottia (1h)
-    - Aukko ei ole lounastauko
-    - Täyttäminen ei ylitä max tunteja
+    - Aukko on max 4 slottia (2h), EI lasketa lounasta mukaan
+    - Lounaslotteja ei täytetä
     """
     for dm in active_daymen:
         work = dm_work[dm]
         
         # Käy läpi kaikki slotit ja etsi aukot
-        # Aukko = ei-työ slotti jolla on työtä molemmilla puolilla (max 2 slotin päässä)
         for slot in range(48):
             if work[slot]:
                 continue  # Jo töissä
@@ -1565,14 +1563,19 @@ def fill_small_gaps(dm_work, dm_ops, active_daymen, times):
                     right_work = s
                     break
             
-            # Jos työtä molemmilla puolilla ja aukko on pieni (max 2 slottia)
+            # Jos työtä molemmilla puolilla
             if left_work >= 0 and right_work >= 0:
-                gap_size = right_work - left_work - 1
+                # Laske aukon koko ILMAN lounasslotteja
+                gap_slots = []
+                for s in range(left_work + 1, right_work):
+                    if LUNCH_START <= s < LUNCH_END:
+                        continue  # Ohita lounas
+                    if not work[s]:
+                        gap_slots.append(s)
                 
-                # Tarkista ettei lounas ole välissä
-                lunch_in_gap = any(LUNCH_START <= s < LUNCH_END for s in range(left_work + 1, right_work))
+                gap_size = len(gap_slots)
                 
-                if gap_size <= 2 and not lunch_in_gap:
+                if gap_size <= 4 and slot in gap_slots:
                     # Täytä tämä slotti
                     work[slot] = True
                     if is_op_slot(times, slot):
@@ -1714,12 +1717,17 @@ def fix_stcw_violations(
     wm_work=None,
     wm_sluice=None,
     watchman_states=None,
+    pending_next_day=None,
 ):
     """
     VAIHE 6: Korjaa STCW-rikkeet jälkikäteen.
     
     Jos työntekijällä on STCW-rike (alle 10h lepoa tai alle 6h pisin lepo
     jossain 24h ikkunassa), yritetään siirtää slotteja toiselle työntekijälle.
+    
+    Tarkistaa sekä:
+    - prev_day -> current_day (edellinen päivä vaikuttaa nykyiseen)
+    - current_day -> next_day (nykyinen päivä vaikuttaa seuraavaan, simuloitu)
     
     Priorisoi:
     1. Slussi-slottien siirto watchmanille (jos mahdollista)
@@ -1731,6 +1739,50 @@ def fix_stcw_violations(
         wm_sluice = {wm: [False] * 48 for wm in WATCHMEN}
     if watchman_states is None:
         watchman_states = {wm: {'extended_start': False, 'extended_end': False} for wm in WATCHMEN}
+    if pending_next_day is None:
+        pending_next_day = {dm: {'work': [], 'sluice': []} for dm in DAYMEN}
+    
+    def check_stcw_both_directions(dm, test_work):
+        """
+        Tarkistaa STCW molempiin suuntiin:
+        1. prev_day -> test_work (nykyinen)
+        2. test_work -> next_day (simuloitu)
+        """
+        # Tarkista edellinen -> nykyinen
+        ok1, worst1, analysis1 = check_stcw_sliding(
+            prev_day_work.get(dm, [False] * 48),
+            test_work,
+            min_longest_rest_hours
+        )
+        
+        if not ok1:
+            return False, worst1, analysis1
+        
+        # Simuloi seuraava päivä: carry-over + normaali 08-16 työpäivä
+        next_day_test = [False] * 48
+        
+        # Lisää carry-over slotit
+        for s in pending_next_day.get(dm, {}).get('work', []):
+            if 0 <= s < 48:
+                next_day_test[s] = True
+        
+        # Lisää normaali työpäivä (08-16, lounas pois)
+        for s in range(NORMAL_START, NORMAL_END):
+            if LUNCH_START <= s < LUNCH_END:
+                continue
+            next_day_test[s] = True
+        
+        # Tarkista nykyinen -> seuraava
+        ok2, worst2, analysis2 = check_stcw_sliding(
+            test_work,
+            next_day_test,
+            min_longest_rest_hours
+        )
+        
+        if not ok2:
+            return False, worst2, analysis2
+        
+        return True, None, analysis1
     
     max_iterations = 100
     
@@ -1738,11 +1790,7 @@ def fix_stcw_violations(
         violation_found = False
         
         for dm in active_daymen:
-            ok, worst_slot, analysis = check_stcw_sliding(
-                prev_day_work.get(dm, [False] * 48),
-                dm_work[dm],
-                min_longest_rest_hours
-            )
+            ok, worst_slot, analysis = check_stcw_both_directions(dm, dm_work[dm])
             
             if ok:
                 continue
@@ -1764,17 +1812,16 @@ def fix_stcw_violations(
                 dm_test = dm_work[dm][:]
                 dm_test[slot] = False
                 
-                dm_ok_after, _, new_analysis = check_stcw_sliding(
-                    prev_day_work.get(dm, [False] * 48),
-                    dm_test,
-                    min_longest_rest_hours
-                )
+                dm_ok_after, _, new_analysis = check_stcw_both_directions(dm, dm_test)
                 
                 # Jos tilanne ei parane, ohita
                 if not dm_ok_after:
-                    old_rest = analysis['longest_rest']
-                    new_rest = new_analysis['longest_rest'] if new_analysis else 0
-                    if new_rest <= old_rest:
+                    if analysis and new_analysis:
+                        old_rest = analysis['longest_rest']
+                        new_rest = new_analysis['longest_rest']
+                        if new_rest <= old_rest:
+                            continue
+                    elif not new_analysis:
                         continue
                 
                 # Tee siirto
@@ -1783,6 +1830,12 @@ def fix_stcw_violations(
                 wm_work[wm][slot] = True
                 wm_sluice[wm][slot] = True
                 update_watchman_state(wm, slot, watchman_states)
+                
+                # Päivitä myös pending_next_day jos slotti oli carry-over
+                if slot in pending_next_day.get(dm, {}).get('work', []):
+                    pending_next_day[dm]['work'].remove(slot)
+                if slot in pending_next_day.get(dm, {}).get('sluice', []):
+                    pending_next_day[dm]['sluice'].remove(slot)
                 
                 moved = True
                 break
@@ -1828,26 +1881,21 @@ def fix_stcw_violations(
                     receiver_test = dm_work[receiver][:]
                     receiver_test[slot] = True
                     
-                    # Tarkista että siirto parantaa tilannetta (ei välttämättä korjaa kokonaan)
-                    dm_ok_after, _, new_analysis = check_stcw_sliding(
-                        prev_day_work.get(dm, [False] * 48),
-                        dm_test,
-                        min_longest_rest_hours
-                    )
+                    # Tarkista että siirto parantaa tilannetta
+                    dm_ok_after, _, new_analysis = check_stcw_both_directions(dm, dm_test)
                     
                     # Jos tilanne ei parane, ohita
                     if not dm_ok_after:
-                        old_rest = analysis['total_rest']
-                        new_rest = new_analysis['total_rest'] if new_analysis else 0
-                        if new_rest <= old_rest:
+                        if analysis and new_analysis:
+                            old_rest = analysis['total_rest']
+                            new_rest = new_analysis['total_rest']
+                            if new_rest <= old_rest:
+                                continue
+                        elif not new_analysis:
                             continue
                     
                     # Tarkista ettei siirto aiheuta rikettä receiverille
-                    receiver_ok, _, _ = check_stcw_sliding(
-                        prev_day_work.get(receiver, [False] * 48),
-                        receiver_test,
-                        min_longest_rest_hours
-                    )
+                    receiver_ok, _, _ = check_stcw_both_directions(receiver, receiver_test)
                     
                     if not receiver_ok:
                         continue  # Siirto aiheuttaisi rikkeen receiverille
@@ -2111,9 +2159,6 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
                             prev_day_work=prev_day_work, min_longest_rest_hours=min_longest_rest_hours)
         ensure_op_coverage(dm_work, dm_ops, op_inside_slots, active_daymen, day_idx, constraints)
         fill_gaps_between_blocks(dm_work, dm_ops, active_daymen, day_idx, times, constraints)
-        
-        # VAIHE 4: Täytä pienet aukot
-        fill_small_gaps(dm_work, dm_ops, active_daymen, times)
 
         # VAIHE 5: Tasapainota daymanien tunnit (ero max 1h)
         rebalance_dayman_hours(
@@ -2128,8 +2173,12 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
             dm_work, dm_ops, dm_arr, dm_dep, dm_sluice, dm_shifting,
             active_daymen, day_idx, times, constraints, prev_day_work,
             min_longest_rest_hours=min_longest_rest_hours,
-            wm_work=wm_work, wm_sluice=wm_sluice, watchman_states=watchman_states
+            wm_work=wm_work, wm_sluice=wm_sluice, watchman_states=watchman_states,
+            pending_next_day=pending_next_day
         )
+        
+        # VAIHE 7: Täytä pienet aukot (max 2h) - kutsutaan lopuksi kun kaikki muu on valmis
+        fill_small_gaps(dm_work, dm_ops, active_daymen, times)
         
         # Tallenna daymanien tulokset
         for dm in DAYMEN:
