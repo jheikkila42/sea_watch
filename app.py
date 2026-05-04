@@ -803,7 +803,7 @@ def main():
     tab_auto, tab_manual, tab_chat = st.tabs([
         "📝 Automaattinen syöttö", 
         "✋ Päivä 1 manuaalinen",
-        "💬 AI Chat"
+        "💬 AI Chat, debug"
     ])
 
     # Etusivun varoitus heti generoinnin jälkeen
