@@ -1596,6 +1596,8 @@ def rebalance_dayman_hours(
     prev_day_work,
     min_longest_rest_hours=6,
     max_diff_hours=1.0,
+    target_hours=8.5,
+    soft_upper_hours=9.5,
 ):
     """
     Tasapainottaa daymanien tuntieroja siirtämällä 30 min slotteja.
@@ -1616,6 +1618,8 @@ def rebalance_dayman_hours(
             break
 
         moved = False
+        best_move = None
+        best_score = None
 
         for slot in range(NORMAL_START, NORMAL_END):
             if LUNCH_START <= slot < LUNCH_END:
@@ -1640,6 +1644,8 @@ def rebalance_dayman_hours(
             receiver_hours = hours[receiver]
             receiver_max = get_max_hours(receiver, constraints)
             if receiver_hours >= receiver_max:
+                continue
+            if receiver_hours >= soft_upper_hours:
                 continue
             if not can_work_slot(receiver, slot, day_idx, constraints, receiver_hours):
                 continue
@@ -1671,31 +1677,42 @@ def rebalance_dayman_hours(
             ):
                 continue
 
-            # Tee siirto
+            donor_after = donor_hours_after
+            receiver_after = receiver_hours + 0.5
+            new_diff = donor_after - receiver_after
+            score = (
+                abs(hours[donor] - target_hours) + abs(hours[receiver] - target_hours)
+            ) - (
+                abs(donor_after - target_hours) + abs(receiver_after - target_hours)
+            )
+            score += (diff - new_diff) * 2
+
+            if best_score is None or score > best_score:
+                best_score = score
+                best_move = (slot, is_op, donor_is_only_op)
+
+        if best_move is not None:
+            slot, is_op, donor_is_only_op = best_move
+
             dm_work[donor][slot] = False
             dm_work[receiver][slot] = True
 
             if is_op:
                 dm_ops[receiver][slot] = True
-                # donorin op-merkintä pois, jos donor ei enää työskentele slotissa
                 dm_ops[donor][slot] = False
             elif dm_ops[donor][slot] and not dm_work[donor][slot]:
                 dm_ops[donor][slot] = False
 
-            # Varmista, että op-slotilla on edelleen vähintään yksi tekijä
             if donor_is_only_op and not any(
                 dm_work[dm][slot] and dm_ops[dm][slot] for dm in active_daymen
             ):
-                # rollback
                 dm_work[donor][slot] = True
                 dm_work[receiver][slot] = False
                 dm_ops[donor][slot] = True
                 if not dm_work[receiver][slot]:
                     dm_ops[receiver][slot] = False
-                continue
-
-            moved = True
-            break
+            else:
+                moved = True
 
         if not moved:
             break
@@ -2179,6 +2196,16 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
         
         # VAIHE 7: Täytä pienet aukot (max 2h) - kutsutaan lopuksi kun kaikki muu on valmis
         fill_small_gaps(dm_work, dm_ops, active_daymen, times)
+
+        # Lopullinen tasapainotus myöhäisten korjausten jälkeen
+        rebalance_dayman_hours(
+            dm_work, dm_ops, dm_arr, dm_dep, dm_sluice, dm_shifting,
+            active_daymen, day_idx, times, constraints, prev_day_work,
+            min_longest_rest_hours=min_longest_rest_hours,
+            max_diff_hours=0.5,
+            target_hours=8.5,
+            soft_upper_hours=9.5
+        )
         
         # Tallenna daymanien tulokset
         for dm in DAYMEN:
