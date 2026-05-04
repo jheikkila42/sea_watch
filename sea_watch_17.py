@@ -152,6 +152,52 @@ def is_within_watchman_shift(watchman, slot):
     return False
 
 
+def align_watchman_extra_work(wm_work, wm_sluice):
+    """
+    Täyttää aukot watchmanin vahtivuoron ja lisätyön välissä.
+    
+    Jos watchman tekee työtä vahtivuoronsa ulkopuolella ja välissä on aukko,
+    täytetään aukko niin että työ jatkuu ilman taukoa.
+    
+    Esim: Watchman 1 vuoro 12-16, slussi 17-18 -> täytetään 16-17
+    """
+    for wm in WATCHMEN:
+        work = wm_work[wm]
+        shifts = WATCHMAN_SHIFTS.get(wm, {}).get('shifts', [])
+        
+        for shift_start, shift_end in shifts:
+            # Tarkista onko työtä JÄLKEEN vuoron (late extension)
+            # Etsi ensimmäinen työslotti vuoron jälkeen
+            first_extra_after = None
+            for s in range(shift_end, min(shift_end + 4, 48)):  # Max 2h päässä
+                if work[s]:
+                    first_extra_after = s
+                    break
+            
+            # Jos löytyi ja välissä on aukko, täytä se
+            if first_extra_after is not None and first_extra_after > shift_end:
+                for s in range(shift_end, first_extra_after):
+                    work[s] = True
+                    # Jos alkuperäinen työ oli slussia, merkitään myös täyttö slussiksi
+                    if wm_sluice[wm][first_extra_after]:
+                        wm_sluice[wm][s] = True
+            
+            # Tarkista onko työtä ENNEN vuoroa (early extension)
+            # Etsi viimeinen työslotti ennen vuoroa
+            last_extra_before = None
+            for s in range(shift_start - 1, max(shift_start - 5, -1), -1):  # Max 2h päässä
+                if work[s]:
+                    last_extra_before = s
+                    break
+            
+            # Jos löytyi ja välissä on aukko, täytä se
+            if last_extra_before is not None and last_extra_before < shift_start - 1:
+                for s in range(last_extra_before + 1, shift_start):
+                    work[s] = True
+                    if wm_sluice[wm][last_extra_before]:
+                        wm_sluice[wm][s] = True
+
+
 def can_watchman_take_slot(watchman, slot, watchman_states):
     """
     Tarkistaa voiko watchman ottaa tämän slotin.
