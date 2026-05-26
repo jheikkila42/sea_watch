@@ -752,8 +752,13 @@ def parse_day_times(info):
     """
     Parsii päivän ajat sloteiksi.
     Palauttaa dictin kaikista relevanteista sloteista.
+    
+    Jos operaatio menee yli keskiyön (esim. 22:00-03:00), palauttaa myös
+    'op_carryover_end' joka kertoo mihin asti seuraavana päivänä jatketaan.
     """
     port_operations_info = info.get('port_operations')
+    op_carryover_end = 0  # Slotti johon asti seuraavana päivänä jatketaan
+    
     if port_operations_info:
         port_operations = []
         for operation in port_operations_info:
@@ -765,7 +770,9 @@ def parse_day_times(info):
                 continue
             op_start = time_to_slot(op_start_h, op_start_m)
             if op_end_h is not None and op_end_h < op_start_h:
+                # OP menee yli keskiyön
                 op_end = 48
+                op_carryover_end = max(op_carryover_end, time_to_slot(op_end_h, op_end_m))
             elif op_end_h == 0 and op_start_h > 0:
                 op_end = 48
             elif op_end_h is not None:
@@ -781,7 +788,9 @@ def parse_day_times(info):
         if op_start_h is not None:
             op_start = time_to_slot(op_start_h, op_start_m)
             if op_end_h is not None and op_end_h < op_start_h:
+                # OP menee yli keskiyön
                 op_end = 48
+                op_carryover_end = time_to_slot(op_end_h, op_end_m)
             elif op_end_h == 0 and op_start_h > 0:
                 op_end = 48
             elif op_end_h is not None:
@@ -872,6 +881,7 @@ def parse_day_times(info):
         'op_start': op_start,
         'op_end': op_end,
         'op_ranges': port_operations,
+        'op_carryover_end': op_carryover_end,
         'arrival_start': arrival_starts[0] if arrival_starts else None,
         'arrival_starts': arrival_starts,
         'departure_start': departure_starts[0] if departure_starts else None,
@@ -962,7 +972,7 @@ def apply_sluice_arrival_slots(dm_work, dm_sluice, daymen, times, pending_next_d
         pending_next_day päivitettynä
     """
     if pending_next_day is None:
-        pending_next_day = {dm: {'work': [], 'sluice': []} for dm in daymen}
+        pending_next_day = {dm: {'work': [], 'sluice': [], 'op': []} for dm in daymen}
     if prev_day_work is None:
         prev_day_work = {dm: [False] * 48 for dm in daymen}
     if watchman_states is None:
@@ -1079,7 +1089,7 @@ def apply_sluice_departure_slots(dm_work, dm_sluice, daymen, times, pending_next
         pending_next_day päivitettynä
     """
     if pending_next_day is None:
-        pending_next_day = {dm: {'work': [], 'sluice': []} for dm in daymen}
+        pending_next_day = {dm: {'work': [], 'sluice': [], 'op': []} for dm in daymen}
     if prev_day_work is None:
         prev_day_work = {dm: [False] * 48 for dm in daymen}
     if watchman_states is None:
@@ -1414,7 +1424,7 @@ def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constra
         
         if did_night_shift:
             _extend_night_shift(dm, dm_work, dm_ops, op_start, op_end, min_h, max_h, 
-                               day_idx, constraints)
+                               day_idx, constraints, times)
             continue
         
         # Laske aikaisin mahdollinen aloitus STCW:n perusteella
@@ -1472,7 +1482,7 @@ def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constra
 
 
 def _extend_night_shift(dm, dm_work, dm_ops, op_start, op_end, min_h, max_h, 
-                        day_idx, constraints):
+                        day_idx, constraints, times):
     """
     Apufunktio: Laajentaa yövuoroa tarvittaessa.
     """
@@ -1803,7 +1813,7 @@ def fix_stcw_violations(
     if watchman_states is None:
         watchman_states = {wm: {'extended_start': False, 'extended_end': False} for wm in WATCHMEN}
     if pending_next_day is None:
-        pending_next_day = {dm: {'work': [], 'sluice': []} for dm in DAYMEN}
+        pending_next_day = {dm: {'work': [], 'sluice': [], 'op': []} for dm in DAYMEN}
     
     def check_stcw_both_directions(dm, test_work):
         """
@@ -2128,12 +2138,27 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
     continuous_nights = analyze_continuous_nights(days_data)
     
     # Pending-slotit edelliseltä päivältä (carry-over keskiyön yli)
-    pending_next_day = {dm: {'work': [], 'sluice': []} for dm in DAYMEN}
+    pending_next_day = {dm: {'work': [], 'sluice': [], 'op': []} for dm in DAYMEN}
+    # OP carry-over: mihin slottiin asti seuraavan päivän alussa on OP
+    pending_op_carryover_end = 0
     
     # Generoi päivä kerrallaan
     for day_idx, info in enumerate(days_data):
         # Parsitaan päivän ajat
         times = parse_day_times(info)
+        
+        # Lisää edellisen päivän OP carry-over tämän päivän op_ranges alkuun
+        if pending_op_carryover_end > 0:
+            # Lisää (0, pending_op_carryover_end) op_ranges:iin
+            times['op_ranges'] = [(0, pending_op_carryover_end)] + times.get('op_ranges', [])
+            # Päivitä op_start ja op_end
+            if times['op_start'] is None or 0 < times['op_start']:
+                times['op_start'] = 0
+            if times['op_end'] is None or pending_op_carryover_end > times['op_end']:
+                times['op_end'] = pending_op_carryover_end
+        
+        # Tallenna tämän päivän op_carryover seuraavalle päivälle
+        pending_op_carryover_end = times.get('op_carryover_end', 0)
         
         # Edellisen päivän työvuorot
         prev_day_work = {}
@@ -2185,7 +2210,7 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
                     dm_sluice[dm][slot] = True
         
         # Nollaa pending seuraavaa päivää varten
-        pending_next_day = {dm: {'work': [], 'sluice': []} for dm in DAYMEN}
+        pending_next_day = {dm: {'work': [], 'sluice': [], 'op': []} for dm in DAYMEN}
         
         # Aktiiviset daymanit
         active_daymen = [dm for dm in DAYMEN if not is_day_off(dm, day_idx, constraints)]
