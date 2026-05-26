@@ -934,21 +934,49 @@ def apply_departure_slots(dm_work, dm_dep, active_daymen, day_idx, times, constr
     Vaihe 1.2: Lähtö - 2 daymaniä (1h).
     """
     for departure_start in times.get('departure_starts', []):
-        scores = {}
-        for dm in active_daymen:
+        # Jos lähtö on ennen normaaliaikaa, priorisoi yötyöntekijät
+        night_workers = []
+        if departure_start < NORMAL_START:
+            night_workers = [dm for dm in active_daymen 
+                           if any(dm_work[dm][s] for s in range(0, departure_start))]
+        
+        selected = []
+        
+        # 1. Lisää yötyöntekijät ensin
+        for dm in night_workers:
             can_do = True
             for slot in range(departure_start, departure_start + 2):
                 if not can_work_slot(dm, slot, day_idx, constraints, sum(dm_work[dm])/2):
                     can_do = False
                     break
-            if not can_do:
-                continue
+            if can_do and len(selected) < 2:
+                selected.append(dm)
+        
+        # 2. Jos alle 2, täydennä muilla daymaneilla
+        if len(selected) < 2:
+            scores = {}
+            for dm in active_daymen:
+                if dm in selected:
+                    continue  # Jo valittu
+                
+                can_do = True
+                for slot in range(departure_start, departure_start + 2):
+                    if not can_work_slot(dm, slot, day_idx, constraints, sum(dm_work[dm])/2):
+                        can_do = False
+                        break
+                if not can_do:
+                    continue
 
-            hours = sum(dm_work[dm]) / 2
-            continuity = 1 if (departure_start > 0 and dm_work[dm][departure_start - 1]) else 0
-            scores[dm] = -hours + continuity
+                hours = sum(dm_work[dm]) / 2
+                continuity = 1 if (departure_start > 0 and dm_work[dm][departure_start - 1]) else 0
+                scores[dm] = -hours + continuity
 
-        selected = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
+            additional = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
+            for dm in additional:
+                if len(selected) >= 2:
+                    break
+                selected.append(dm)
+        
         for dm in selected:
             add_block(dm_work[dm], departure_start, departure_start + 2, dm_dep[dm])
 
@@ -1400,16 +1428,23 @@ def _find_best_worker_for_inside_slot(slot, active_daymen, dm_work, prev_day_wor
 
 
 def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constraints,
-                         prev_day_work=None, min_longest_rest_hours=6):
+                         prev_day_work=None, min_longest_rest_hours=6, dm_arr=None, dm_dep=None):
     """
     Vaihe 3.2: Täytä loput tunnit aikaisimmasta sallitusta aloitusajasta.
     Huomioi STCW:n mukaisen aikaisimman aloitusajan.
+    
+    Jos dayman teki yötyötä JA oli mukana lähdössä/tulossa ennen 08:00,
+    hän ei jatka normaaliaikana - tunnit täytetään seuraavana päivänä.
     """
     op_start = times['op_start']
     op_end = times['op_end']
     
     if prev_day_work is None:
         prev_day_work = {dm: [False] * 48 for dm in active_daymen}
+    if dm_arr is None:
+        dm_arr = {dm: [False] * 48 for dm in active_daymen}
+    if dm_dep is None:
+        dm_dep = {dm: [False] * 48 for dm in active_daymen}
     
     for dm in active_daymen:
         current_hours = sum(dm_work[dm]) / 2
@@ -1419,12 +1454,15 @@ def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constra
         if current_hours >= min_h:
             continue
         
+        # Tarkista onko yötyötä (mikä tahansa työ ennen 08:00)
         night_work_slots = sum(1 for s in range(0, NORMAL_START) if dm_work[dm][s])
-        did_night_shift = night_work_slots >= 4
         
-        if did_night_shift:
+        if night_work_slots > 0:
+            # Yötyöntekijä - ei jatka normaaliaikana samana päivänä
+            # Laajennetaan vain jos on lisää operaatioita yöllä
             _extend_night_shift(dm, dm_work, dm_ops, op_start, op_end, min_h, max_h, 
                                day_idx, constraints, times)
+            # Tunnit jäävät vajaiksi, täytetään seuraavana päivänä
             continue
         
         # Laske aikaisin mahdollinen aloitus STCW:n perusteella
@@ -1460,11 +1498,15 @@ def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constra
             slot += 1
         
         # Jos tunnit eivät riitä, jatka iltapäivään/iltaan (NORMAL_END jälkeen)
+        # VAIN jos slotissa on operaatio
         if current_hours < min_h:
             for slot in range(NORMAL_END, 48):
                 if current_hours >= min_h:
                     break
                 if dm_work[dm][slot]:
+                    continue
+                # VAIN jos slotissa on operaatio
+                if not is_op_slot(times, slot):
                     continue
                 if not can_work_slot(dm, slot, day_idx, constraints, current_hours):
                     continue
@@ -1476,15 +1518,17 @@ def fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constra
                     continue
                 
                 dm_work[dm][slot] = True
-                if is_op_slot(times, slot):
-                    dm_ops[dm][slot] = True
+                dm_ops[dm][slot] = True
                 current_hours = sum(dm_work[dm]) / 2
 
 
 def _extend_night_shift(dm, dm_work, dm_ops, op_start, op_end, min_h, max_h, 
                         day_idx, constraints, times):
     """
-    Apufunktio: Laajentaa yövuoroa tarvittaessa.
+    Apufunktio: Laajentaa yövuoroa VAIN jos on operaatioita.
+    
+    Sääntö: Kukaan ei ole töissä 08-17 ulkopuolella ilman operaatioita
+    (lähtö, tulo, slussi, lastiOP, shifting).
     """
     current_hours = sum(dm_work[dm]) / 2
     
@@ -1500,11 +1544,13 @@ def _extend_night_shift(dm, dm_work, dm_ops, op_start, op_end, min_h, max_h,
                 break
             if current_hours >= max_h:
                 break
+            # VAIN jos slotissa on operaatio
+            if not is_op_slot(times, s):
+                break
             if not can_work_slot(dm, s, day_idx, constraints, current_hours):
                 break
             dm_work[dm][s] = True
-            if is_op_slot(times, s):
-                dm_ops[dm][s] = True
+            dm_ops[dm][s] = True
             current_hours = sum(dm_work[dm]) / 2
 
 
@@ -2218,7 +2264,14 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
         # VAIHE 0.5: Pakolliset slotit rajoitteista
         apply_constraint_slots(dm_work, dm_ops, DAYMEN, day_idx, times, constraints)
         
-        # VAIHE 1: Pakolliset
+        # VAIHE 0.6: Yöajan OP:t ENNEN tuloa/lähtöä (jotta yötyöntekijät tiedetään)
+        apply_op_outside_normal_hours(
+            dm_work, dm_ops, active_daymen, day_idx, times,
+            constraints, prev_day_work, continuous_night_info,
+            min_longest_rest_hours=min_longest_rest_hours
+        )
+        
+        # VAIHE 1: Pakolliset (tulo, lähtö, slussi, shifting)
         apply_arrival_slots(dm_work, dm_arr, active_daymen, day_idx, times, constraints)
         apply_departure_slots(dm_work, dm_dep, active_daymen, day_idx, times, constraints)
         pending_next_day = apply_sluice_arrival_slots(
@@ -2232,11 +2285,6 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
             watchman_states=watchman_states, min_longest_rest_hours=min_longest_rest_hours
         )
         apply_shifting_slots(dm_work, dm_shifting, DAYMEN, times)
-        apply_op_outside_normal_hours(
-            dm_work, dm_ops, active_daymen, day_idx, times,
-            constraints, prev_day_work, continuous_night_info,
-            min_longest_rest_hours=min_longest_rest_hours
-        )
         
         # VAIHE 3: Jaa työblokit
         op_inside_slots = fill_op_inside_normal_hours(
@@ -2244,7 +2292,8 @@ def generate_schedule(days_data, constraints=None, min_longest_rest_hours=6):
             min_longest_rest_hours=min_longest_rest_hours
         )
         fill_remaining_hours(dm_work, dm_ops, active_daymen, day_idx, times, constraints,
-                            prev_day_work=prev_day_work, min_longest_rest_hours=min_longest_rest_hours)
+                            prev_day_work=prev_day_work, min_longest_rest_hours=min_longest_rest_hours,
+                            dm_arr=dm_arr, dm_dep=dm_dep)
         ensure_op_coverage(dm_work, dm_ops, op_inside_slots, active_daymen, day_idx, constraints)
         fill_gaps_between_blocks(dm_work, dm_ops, active_daymen, day_idx, times, constraints)
 
