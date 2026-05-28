@@ -535,8 +535,10 @@ class TestRegressions:
         assert loaded_wb.calculation.calcMode == 'auto'
         assert loaded_wb.calculation.fullCalcOnLoad is True
         assert loaded_wb.calculation.forceFullCalc is True
+        assert len(ws.conditional_formatting) == 1
         assert ws["AX3"].value == '=COUNTA(B3:AW3)/2'
         assert ws["AX3"].number_format == '0.0'
+        assert ws["B3"].fill.fill_type is None
 
 
 if __name__ == '__main__':
